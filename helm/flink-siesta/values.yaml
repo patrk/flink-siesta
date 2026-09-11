@@ -1,0 +1,34 @@
+image:
+  repository: ghcr.io/patrk/flink-siesta
+  tag: ""
+replicaCount: 2
+
+config:
+  annotationPrefix: siesta.flink.io
+  dryRun: false
+  restart:
+    maxRestarts: 3
+    window: 30m
+    failingAfter: 10m
+
+kafka:
+  bootstrapServers: ""
+  securityProtocol: PLAINTEXT
+  # Name of an existing Secret with keys: sasl-mechanism, sasl-jaas-config
+  existingSecret: ""
+
+# Namespaced by default. The controller watches only its own namespace.
+rbac:
+  create: true
+
+# Standard pod knobs.
+podSecurityContext: { runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
+securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
+resources: { requests: { cpu: 50m, memory: 256Mi }, limits: { memory: 512Mi } }
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+podLabels: {}
+extraEnv: []
+extraObjects: []

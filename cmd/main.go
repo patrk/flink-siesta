@@ -21,7 +21,14 @@ import (
 	"github.com/patrk/flink-siesta/internal/probe"
 )
 
+// version is set at build time: -ldflags "-X main.version=v0.1.0".
+var version = "dev"
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "version" {
+		fmt.Println(version)
+		return
+	}
 	if err := run(); err != nil {
 		ctrl.Log.WithName("setup").Error(err, "exiting")
 		os.Exit(1)
