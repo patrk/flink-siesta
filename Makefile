@@ -1,5 +1,5 @@
 FLINK_OPERATOR_VERSION ?= 1.15.0
-ENVTEST_K8S_VERSION ?= 1.31.0
+ENVTEST_K8S_VERSION ?= 1.34.0
 IMAGE ?= siesta:e2e
 
 .PHONY: deps build test it envtest lint image kind-up kind-down e2e
