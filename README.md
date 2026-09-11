@@ -51,8 +51,16 @@ Prefix is configurable (`siesta.annotation-prefix`, default `siesta.flink.io`).
 
 ## Try it
 
-    make kind-up      # KinD + Flink operator + single-node Kafka
-    make e2e          # deploys an example job, produces, asserts suspend/resume
+    make deps         # once: pin dependencies
+    make test         # pure decision tests, no Docker, no cluster
+    make it           # Kafka probe against a Testcontainers broker (Docker)
+    make envtest      # controller against a local kube-apiserver with the FlinkDeployment CRD
+    make kind-up e2e  # KinD + Flink operator + single-node Kafka, real suspend/resume
+
+## Built with
+
+Go, controller-runtime, franz-go. ~20 MB image, starts in under a second. The FlinkDeployment is
+handled as an unstructured object: the CRD is external and only six fields are read.
 
 ## Status
 

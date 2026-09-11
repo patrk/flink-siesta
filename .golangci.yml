@@ -1,0 +1,48 @@
+version: "2"
+
+run:
+  timeout: 5m
+  build-tags: [integration]
+
+linters:
+  default: standard
+  enable:
+    - revive
+    - gocritic
+    - errorlint
+    - copyloopvar
+    - misspell
+    - nolintlint
+    - unparam
+    - unconvert
+    - prealloc
+    - bodyclose
+    - nilerr
+    - errname
+    - gosec
+  settings:
+    revive:
+      rules:
+        - name: exported
+        - name: package-comments
+        - name: receiver-naming
+        - name: unused-parameter
+        - name: error-strings
+        - name: var-naming
+    gocritic:
+      enabled-tags: [diagnostic, style, performance]
+      disabled-checks: [hugeParam]
+    gosec:
+      excludes: [G115]
+  exclusions:
+    generated: lax
+    presets: [comments, std-error-handling]
+    rules:
+      - path: _test\.go
+        linters: [gosec, unparam]
+
+formatters:
+  enable: [gofmt, goimports]
+  settings:
+    goimports:
+      local-prefixes: [github.com/patrk/flink-siesta]
