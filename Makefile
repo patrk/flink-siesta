@@ -12,7 +12,7 @@ deps:
 
 build: ; CGO_ENABLED=0 go build -o bin/siesta ./cmd
 test:  ; go test ./...
-it:    ; go test -tags integration ./internal/probe/
+it:    ; go test -count=1 -tags integration ./internal/probe/
 lint:  ; golangci-lint run ./...
 
 envtest:
