@@ -1,0 +1,28 @@
+package flink
+
+import (
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	"github.com/patrk/flink-siesta/internal/decide"
+)
+
+var GVK = schema.GroupVersionKind{Group: "flink.apache.org", Version: "v1beta1", Kind: "FlinkDeployment"}
+
+func New() *unstructured.Unstructured {
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(GVK)
+	return u
+}
+
+// Live maps status into the decider's view. Missing fields become "", which the decider treats as unknown.
+func Live(u *unstructured.Unstructured) decide.Live {
+	specState, _, _ := unstructured.NestedString(u.Object, "spec", "job", "state")
+	if specState == "" {
+		specState = "running" // the operator's default when the field is absent
+	}
+	jobState, _, _ := unstructured.NestedString(u.Object, "status", "jobStatus", "state")
+	lifecycle, _, _ := unstructured.NestedString(u.Object, "status", "lifecycleState")
+	recErr, _, _ := unstructured.NestedString(u.Object, "status", "reconciliationStatus", "error")
+	return decide.Live{SpecJobState: specState, JobState: jobState, LifecycleState: lifecycle, ReconcileError: recErr}
+}
