@@ -1,0 +1,35 @@
+apiVersion: flink.apache.org/v1beta1
+kind: FlinkDeployment
+metadata:
+  name: example
+  namespace: default
+  annotations:
+    siesta.flink.io/mode: auto
+    siesta.flink.io/sources: e2e-in
+    siesta.flink.io/idle-after: 2m
+    siesta.flink.io/min-awake: 30s
+spec:
+  image: flink:1.20
+  flinkVersion: v1_20
+  flinkConfiguration:
+    taskmanager.numberOfTaskSlots: "1"
+    state.savepoints.dir: file:///flink-data/savepoints
+    state.checkpoints.dir: file:///flink-data/checkpoints
+    high-availability.type: kubernetes
+    high-availability.storageDir: file:///flink-data/ha
+  serviceAccount: flink
+  jobManager: { resource: { memory: "1024m", cpu: 0.5 } }
+  taskManager: { resource: { memory: "1024m", cpu: 0.5 } }
+  podTemplate:
+    spec:
+      containers:
+        - name: flink-main-container
+          volumeMounts: [{ mountPath: /flink-data, name: flink-data }]
+      volumes:
+        - name: flink-data
+          persistentVolumeClaim: { claimName: flink-data }
+  job:
+    jarURI: local:///opt/flink/examples/streaming/StateMachineExample.jar
+    parallelism: 1
+    upgradeMode: savepoint
+    state: running

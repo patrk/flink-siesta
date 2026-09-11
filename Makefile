@@ -1,6 +1,7 @@
 FLINK_OPERATOR_VERSION ?= 1.15.0
 ENVTEST_K8S_VERSION ?= 1.34.0
 IMAGE ?= siesta:e2e
+KUBE_CONTEXT ?= kind-siesta
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 .PHONY: deps build test it envtest lint image kind-up kind-deps kind-down e2e
@@ -30,14 +31,12 @@ kind-up:
 	$(MAKE) kind-deps
 
 kind-deps:
-	kubectl create -f https://github.com/cert-manager/cert-manager/releases/download/v1.21.2/cert-manager.yaml
-	kubectl wait --for=condition=Available deploy -n cert-manager --all --timeout=180s
 	helm repo add flink-operator https://downloads.apache.org/flink/flink-kubernetes-operator-$(FLINK_OPERATOR_VERSION)/ && helm repo update
-	helm install flink-kubernetes-operator flink-operator/flink-kubernetes-operator --set webhook.create=false
-	kubectl wait --for=condition=Available deploy/flink-kubernetes-operator --timeout=180s
+	helm --kube-context $(KUBE_CONTEXT) install flink-kubernetes-operator flink-operator/flink-kubernetes-operator --set webhook.create=false
+	kubectl --context $(KUBE_CONTEXT) wait --for=condition=Available deploy/flink-kubernetes-operator --timeout=180s
 
 e2e: image
 	kind load docker-image $(IMAGE) --name siesta
-	IMAGE_REPO=siesta IMAGE_TAG=e2e bash e2e/run.sh
+	IMAGE_REPO=siesta IMAGE_TAG=e2e KUBE_CONTEXT=$(KUBE_CONTEXT) bash e2e/run.sh
 
 kind-down: ; kind delete cluster --name siesta
