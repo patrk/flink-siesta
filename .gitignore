@@ -1,4 +1,6 @@
-build/
-.gradle/
-*.iml
-.idea/
+bin/
+dist/
+*.test
+coverage.out
+test/crds/*.yml
+.envtest-path
