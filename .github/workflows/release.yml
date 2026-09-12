@@ -11,6 +11,7 @@ on:
 permissions:
   contents: write
   packages: write
+  id-token: write # keyless signing with the workflow's OIDC identity
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}
@@ -34,22 +35,30 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v7
+      - uses: sigstore/cosign-installer@v4
+      - id: build
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+          provenance: mode=max
+          sbom: true
           build-args: VERSION=${{ steps.v.outputs.tag }}
           tags: ${{ env.IMAGE }}:${{ steps.v.outputs.tag }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=${{ steps.v.outputs.tag }}
             org.opencontainers.image.licenses=Apache-2.0
-      - name: package and push chart
+      - name: sign the image
+        run: cosign sign --yes "${{ env.IMAGE }}@${{ steps.build.outputs.digest }}"
+      - name: package, push and sign the chart
         run: |
           helm package helm/flink-siesta --version "${{ steps.v.outputs.chart }}" --app-version "${{ steps.v.outputs.tag }}" -d dist
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
-          helm push "dist/flink-siesta-${{ steps.v.outputs.chart }}.tgz" "${{ env.CHART_REPO }}"
+          helm push "dist/flink-siesta-${{ steps.v.outputs.chart }}.tgz" "${{ env.CHART_REPO }}" 2>&1 | tee push.log
+          digest=$(grep -o 'sha256:[a-f0-9]*' push.log | head -1)
+          cosign sign --yes "${CHART_REPO#oci://}/flink-siesta@${digest}"
       - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.v.outputs.tag }}
@@ -58,3 +67,5 @@ jobs:
           body: |
             Image: `${{ env.IMAGE }}:${{ steps.v.outputs.tag }}` (linux/amd64, linux/arm64)
             Chart: `helm install siesta ${{ env.CHART_REPO }}/flink-siesta --version ${{ steps.v.outputs.chart }}`
+            Both signed with cosign (keyless, this workflow's identity). Verify:
+            `cosign verify ${{ env.IMAGE }}:${{ steps.v.outputs.tag }} --certificate-identity-regexp 'https://github.com/${{ github.repository }}/' --certificate-oidc-issuer https://token.actions.githubusercontent.com`

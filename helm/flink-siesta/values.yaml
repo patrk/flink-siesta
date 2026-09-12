@@ -42,6 +42,12 @@ metrics:
 rbac:
   create: true
 
+# ValidatingAdmissionPolicy (Kubernetes 1.30+) that lets the controller change only
+# spec.job.state, spec.restartNonce and its own annotations. Cluster-scoped objects; on by
+# default because they cost nothing and cap what a compromised controller could do.
+admissionPolicy:
+  enabled: true
+
 # Standard pod knobs.
 podSecurityContext: { runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
 securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }

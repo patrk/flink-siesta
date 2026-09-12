@@ -30,6 +30,8 @@ wait_for() { # $1 = jsonpath expr, $2 = expected, $3 = timeout s
 echo "clean up any previous run"
 k -n $ns delete flinkdeployment example failing --ignore-not-found --wait=true
 helm --kube-context "$ctx" uninstall siesta -n $ns 2>/dev/null || true
+# A fresh volume per run: no HA metadata, checkpoints or savepoints inherited from the last one.
+k -n $ns delete pvc flink-data --ignore-not-found --wait=true
 
 k -n $ns apply -f "$here/storage.yaml" -f "$here/kafka.yaml"
 k -n $ns rollout status deploy/kafka --timeout=120s
@@ -50,7 +52,12 @@ wait_for '{.spec.job.state}' suspended 360
 wait_for '{.metadata.annotations.siesta\.flink\.io/state}' suspended 60
 wait_for '{.status.lifecycleState}' SUSPENDED 180
 sp=$(k -n $ns get flinkdeployment example -o jsonpath='{.status.jobStatus.upgradeSavepointPath}')
-[ -n "$sp" ] || { echo "operator recorded no savepoint on suspend"; exit 1; }
+[ -n "$sp" ] || {
+  echo "operator recorded no savepoint on suspend; operator events for this object:"
+  uid=$(k -n $ns get flinkdeployment example -o jsonpath='{.metadata.uid}')
+  k -n $ns get events --field-selector involvedObject.uid=$uid -o custom-columns=T:.metadata.creationTimestamp,R:.reason,M:.message \
+    | grep -E "SavepointError|JobException|JobStatusChanged" | cut -c1-300 | tail -12
+  exit 1; }
 echo "savepoint recorded: $sp"
 
 echo "restart the controller while suspended: state must survive us"
@@ -79,6 +86,12 @@ k -n $ns rollout status deploy/kafka --timeout=120s
 i=0; until events | grep -q '^SourceReachable'; do i=$((i+5)); [ $i -ge 180 ] && { echo "no SourceReachable event"; exit 1; }; sleep 5; done
 [ "$(events | grep -c '^SourceUnreachable')" = 1 ] || { echo "SourceUnreachable must be reported once, not per tick"; exit 1; }
 [ "$(k -n $ns get flinkdeployment example -o jsonpath='{.spec.job.state}')" = running ] || { echo "an outage must not change the job"; exit 1; }
+
+echo "admission policy: the controller's identity may not change the image, but may change job.state"
+sa="system:serviceaccount:$ns:siesta"
+if k -n $ns patch flinkdeployment example --as="$sa" --type merge -p '{"spec":{"image":"flink:evil"}}' 2>/dev/null; then
+  echo "admission policy did not block an image change by the controller identity"; exit 1; fi
+k -n $ns patch flinkdeployment example --as="$sa" --type merge -p '{"metadata":{"annotations":{"siesta.flink.io/reason":"admission check"}}}' >/dev/null
 
 echo "delete the deployment: its ConfigMap must be garbage-collected"
 k -n $ns delete flinkdeployment example --wait=true

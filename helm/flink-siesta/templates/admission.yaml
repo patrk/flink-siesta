@@ -1,0 +1,47 @@
+{{- if .Values.admissionPolicy.enabled }}
+# Pins what the controller's ServiceAccount may change on a FlinkDeployment. RBAC cannot
+# limit a patch to fields; this can. Everything else in spec must be unchanged by its writes.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ include "siesta.fullname" . }}-writes
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["flink.apache.org"]
+        apiVersions: ["*"]
+        operations: ["UPDATE"]
+        resources: ["flinkdeployments"]
+  matchConditions:
+    - name: from-siesta
+      expression: 'request.userInfo.username == "system:serviceaccount:{{ .Release.Namespace }}:{{ include "siesta.fullname" . }}"'
+  validations:
+    - expression: >-
+        object.spec.image == oldObject.spec.image &&
+        object.spec.flinkVersion == oldObject.spec.flinkVersion &&
+        object.spec.serviceAccount == oldObject.spec.serviceAccount &&
+        object.spec.flinkConfiguration == oldObject.spec.flinkConfiguration &&
+        object.spec.job.jarURI == oldObject.spec.job.jarURI &&
+        (has(object.spec.job.entryClass) ? object.spec.job.entryClass : "") == (has(oldObject.spec.job.entryClass) ? oldObject.spec.job.entryClass : "") &&
+        (has(object.spec.job.args) ? object.spec.job.args : []) == (has(oldObject.spec.job.args) ? oldObject.spec.job.args : []) &&
+        object.spec.job.parallelism == oldObject.spec.job.parallelism &&
+        object.spec.job.upgradeMode == oldObject.spec.job.upgradeMode &&
+        (has(object.spec.job.initialSavepointPath) ? object.spec.job.initialSavepointPath : "") == (has(oldObject.spec.job.initialSavepointPath) ? oldObject.spec.job.initialSavepointPath : "") &&
+        (has(object.spec.podTemplate) ? object.spec.podTemplate : {}) == (has(oldObject.spec.podTemplate) ? oldObject.spec.podTemplate : {}) &&
+        (has(object.spec.jobManager) ? object.spec.jobManager : {}) == (has(oldObject.spec.jobManager) ? oldObject.spec.jobManager : {}) &&
+        (has(object.spec.taskManager) ? object.spec.taskManager : {}) == (has(oldObject.spec.taskManager) ? oldObject.spec.taskManager : {})
+      message: "siesta may only change spec.job.state, spec.restartNonce and its own annotations"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ include "siesta.fullname" . }}-writes
+spec:
+  policyName: {{ include "siesta.fullname" . }}-writes
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchExpressions:
+        - { key: kubernetes.io/metadata.name, operator: In, values: [{{ .Release.Namespace }}] }
+{{- end }}

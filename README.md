@@ -154,15 +154,29 @@ The ConfigMaps Siesta creates are owned by the deployment and labelled
 Every push runs the first four on Flink 2.2 and operator 1.15. A nightly workflow, also run on
 tags, repeats the e2e on the full grid of operator 1.13, 1.14, 1.15 by Flink 1.20, 2.0, 2.2.
 
+## Least privilege
+
+RBAC grants `patch` on FlinkDeployments, which cannot be narrowed to fields. The chart therefore
+ships a `ValidatingAdmissionPolicy` (on by default, Kubernetes 1.30+) that rejects any write
+from the controller's ServiceAccount that changes anything in `spec` other than `job.state`
+and `restartNonce`. A compromised controller can suspend and resume jobs; it cannot change
+their image, jar, configuration or resources. `admissionPolicy.enabled: false` turns it off
+on clusters without the API.
+
+Release images and charts carry SLSA provenance and an SBOM and are signed with cosign,
+keyless, by the release workflow's identity. The release notes show the verify command.
+
 ## Scale
 
 One reconcile is one cached read of the deployment, one read of its ConfigMap, one or two
 Kafka admin calls, and a write only when something changed. Every deployment is visited
 once a minute. Tens to low hundreds of deployments per namespace run on the default single
 worker with headroom; around a thousand, raise `MaxConcurrentReconciles` and the client
-rate limit, or batch the Kafka calls per tick. `make bench` measures the loop itself: on an
-Apple M4 Pro, one worker does 32,000 reconciles per minute against envtest with a fake probe,
-1.9 ms each, so the API server and Kafka are the limits long before the controller is.
+rate limit, or batch the Kafka calls per tick. `make bench` measures the controller's own
+overhead, not capacity: about 2 ms per reconcile on an Apple M4 Pro, against a local
+envtest API server with a fake probe on the quiet path. Add your Kafka and API server round
+trips to that; with 10 ms to Kafka and 5 ms to the API server, one worker handles a few
+thousand deployments per minute, which is not the limit for the population this is for.
 Horizontal scale is per namespace: one
 instance, one Kafka cluster, one credential. Replicas exist for failover, not throughput;
 leader election keeps one active.
@@ -219,10 +233,14 @@ handled as an unstructured object: the CRD is external and only six fields are r
 
 ## Status
 
-0.2.x. The annotation contract above is stable; a change to it gets a new major version.
-Proven end to end on KinD against the Flink Kubernetes Operator: suspend with savepoint,
-resume from it, restart budget, unrecoverable marking. Not yet run at scale in anger; if you
-do, an issue with your numbers is the most useful thing you can send.
+0.2.x: a well-tested beta. The decision model is small and covered by a table test; every
+transition has been run against the real operator; failure modes have events or tests. What it
+lacks is time: it has not yet run for weeks on a real cluster with real jobs. Run it in dry-run
+on a development namespace first, then live on non-critical jobs.
+
+1.0 will mean: thirty days on a real cluster with more than twenty jobs and no manual
+intervention, the nightly version matrix green for a month, and a soak that kills the leader
+mid-transition. Until then the annotation contract is stable and changes to it bump the major.
 
 ## Logo
 
