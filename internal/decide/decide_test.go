@@ -26,6 +26,11 @@ func lag(m map[string]string, pending int64) Observation {
 	return Observation{Snapshot: m, Known: true, Pending: pending, LagKnown: true}
 }
 
+func withRestart(p policy.Policy, on bool) policy.Policy {
+	p.Restart = on
+	return p
+}
+
 func withGroup(p policy.Policy) policy.Policy {
 	p.ConsumerGroup = "g"
 	return p
@@ -65,6 +70,13 @@ func TestDecide(t *testing.T) {
 		{"with a consumer group, pending records block suspend", withGroup(auto), withSnap(state.Initial(t0), snap("1")), running, lag(snap("1"), 42), t0.Add(15 * 24 * time.Hour), None},
 		{"with a consumer group, unknown lag blocks suspend", withGroup(auto), withSnap(state.Initial(t0), snap("1")), running, seen(snap("1")), t0.Add(15 * 24 * time.Hour), None},
 		{"with a consumer group, caught up suspends", withGroup(auto), withSnap(state.Initial(t0), snap("1")), running, lag(snap("1"), 0), t0.Add(15 * 24 * time.Hour), Suspend},
+		{"idle boundary: exactly idle-after is not yet idle", auto, withSnap(state.Initial(t0), snap("1")), running, seen(snap("1")), t0.Add(14 * 24 * time.Hour), None},
+		{"idle boundary: one second past is idle", auto, withSnap(state.Initial(t0), snap("1")), running, seen(snap("1")), t0.Add(14*24*time.Hour + time.Second), Suspend},
+		{"one partition of several moving is activity", auto, withSnap(state.Initial(t0), map[string]string{"t-0": "1", "t-1": "1"}), running, seen(map[string]string{"t-0": "1", "t-1": "2"}), t0.Add(30 * 24 * time.Hour), None},
+		{"a partition disappearing counts as activity", auto, withSnap(suspendedState(), map[string]string{"t-0": "1", "t-1": "1"}), suspended, seen(map[string]string{"t-0": "1"}), t0.Add(24 * time.Hour), Resume},
+		{"restart off: a failed job is left alone", withRestart(auto, false), state.Initial(t0), Live{SpecJobState: "running", UpgradeMode: "savepoint", JobState: "FAILED", LifecycleState: "FAILED"}, seen(snap("1")), t0, None},
+		{"RESTARTING under failing-after is not failing", auto, state.Initial(t0), Live{SpecJobState: "running", UpgradeMode: "savepoint", JobState: "RESTARTING", LifecycleState: "STABLE"}, seen(snap("1")), t0.Add(9 * time.Minute), None},
+		{"RESTARTING over failing-after is failing", auto, state.Initial(t0), Live{SpecJobState: "running", UpgradeMode: "savepoint", JobState: "RESTARTING", LifecycleState: "STABLE"}, seen(snap("1")), t0.Add(11 * time.Minute), Restart},
 		{"only suspends a RUNNING job", auto, withSnap(state.Initial(t0), snap("1")), Live{SpecJobState: "running", JobState: "RESTARTING", LifecycleState: "STABLE"}, seen(snap("1")), t0.Add(15 * 24 * time.Hour), Restart},
 	}
 	for _, c := range cases {
@@ -167,5 +179,15 @@ func TestResumeLatencyIsReportedOnceRunning(t *testing.T) {
 	up := d.Decide(auto, notYet.Next, running, seen(snap("101")), t0.Add(75*time.Second))
 	if up.ResumedAfter != 75*time.Second || !up.Next.ResumedAt.IsZero() {
 		t.Fatalf("latency must be reported once and cleared, got %+v", up)
+	}
+}
+
+func TestSpecEditWhileActiveKeepsTheClocks(t *testing.T) {
+	d := New(rp)
+	s := withSnap(state.Initial(t0), snap("1"))
+	s.Generation = 1
+	got := d.Decide(auto, s, withGen(running, 2), seen(snap("1")), t0.Add(time.Hour))
+	if !got.Next.LastActivityAt.Equal(t0) || !got.Next.AwakeSince.Equal(t0) || got.Next.Generation != 2 {
+		t.Fatalf("an edit on an active job must only record the generation, got %+v", got.Next)
 	}
 }

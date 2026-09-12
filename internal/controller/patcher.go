@@ -89,7 +89,8 @@ func (p patcher) merge(ctx context.Context, fd *unstructured.Unstructured, s sta
 	if err != nil {
 		return err
 	}
-	return p.Patch(ctx, fd, client.RawPatch(types.MergePatchType, raw))
+	// A named field manager lets GitOps tools ignore what we own by manager, not by path.
+	return p.Patch(ctx, fd, client.RawPatch(types.MergePatchType, raw), client.FieldOwner("siesta"))
 }
 
 func (p patcher) event(fd *unstructured.Unstructured, err error, action, note string) {

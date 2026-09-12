@@ -11,6 +11,11 @@ jobs:
         with: { version: v2.13.2 }
       - run: make test
       - run: make envtest
+      - run: helm lint helm/flink-siesta
+      - run: |
+          helm template t helm/flink-siesta --set kafka.bootstrapServers=b:9092 --set kafka.securityProtocol=SASL_SSL \
+            --set kafka.sasl.existingSecret=s --set kafka.tls.existingSecret=t --set metrics.serviceMonitor.enabled=true \
+            | grep -q "kind: ServiceMonitor"
   integration:
     runs-on: ubuntu-latest
     steps:

@@ -38,6 +38,11 @@ sp=$(k -n $ns get flinkdeployment example -o jsonpath='{.status.jobStatus.upgrad
 [ -n "$sp" ] || { echo "operator recorded no savepoint on suspend"; exit 1; }
 echo "savepoint recorded: $sp"
 
+echo "restart the controller while suspended: state must survive us"
+k -n $ns rollout restart deploy/siesta
+k -n $ns rollout status deploy/siesta --timeout=120s
+k -n $ns get configmap siesta-example -o jsonpath='{.data.state}' | grep -q suspended || { echo "ConfigMap must hold the suspended state"; exit 1; }
+
 echo "produce one record, expect resume within ~1 min"
 k -n $ns exec deploy/kafka -- sh -c 'echo hello | /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server localhost:9092 --topic e2e-in'
 wait_for '{.spec.job.state}' running 120
@@ -48,7 +53,21 @@ k -n $ns logs "$jm" | grep -i -E "restoring job .* from savepoint|restored from 
   || { echo "JobManager log has no savepoint restore line"; k -n $ns logs "$jm" | grep -i savepoint | head; exit 1; }
 # Events outlive deleted objects by an hour; select by UID so earlier runs do not show up.
 uid=$(k -n $ns get flinkdeployment example -o jsonpath='{.metadata.uid}')
-k -n $ns get events --field-selector involvedObject.uid=$uid -o custom-columns=TIME:.metadata.creationTimestamp,REASON:.reason,MESSAGE:.message | grep -E "Suspended|Resumed" | tail -4
+events() { k -n $ns get events --field-selector involvedObject.uid=$uid -o custom-columns=REASON:.reason,MESSAGE:.message; }
+events | grep -E "Suspended|Resumed" | tail -4
+
+echo "take Kafka away: one SourceUnreachable, no transitions; bring it back: one SourceReachable"
+k -n $ns scale deploy/kafka --replicas=0
+i=0; until events | grep -q '^SourceUnreachable'; do i=$((i+5)); [ $i -ge 180 ] && { echo "no SourceUnreachable event"; exit 1; }; sleep 5; done
+k -n $ns scale deploy/kafka --replicas=1
+k -n $ns rollout status deploy/kafka --timeout=120s
+i=0; until events | grep -q '^SourceReachable'; do i=$((i+5)); [ $i -ge 180 ] && { echo "no SourceReachable event"; exit 1; }; sleep 5; done
+[ "$(events | grep -c '^SourceUnreachable')" = 1 ] || { echo "SourceUnreachable must be reported once, not per tick"; exit 1; }
+[ "$(k -n $ns get flinkdeployment example -o jsonpath='{.spec.job.state}')" = running ] || { echo "an outage must not change the job"; exit 1; }
+
+echo "delete the deployment: its ConfigMap must be garbage-collected"
+k -n $ns delete flinkdeployment example --wait=true
+i=0; until ! k -n $ns get configmap siesta-example >/dev/null 2>&1; do i=$((i+5)); [ $i -ge 120 ] && { echo "ConfigMap siesta-example was not garbage-collected"; exit 1; }; sleep 5; done
 
 echo "scenario 2: a job that fails terminally is restarted twice, then marked unrecoverable"
 k -n $ns apply -f "$here/failing.yaml"

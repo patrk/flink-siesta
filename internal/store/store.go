@@ -61,12 +61,12 @@ func (s Store) Save(ctx context.Context, fd *unstructured.Unstructured, st state
 			APIVersion: fd.GetAPIVersion(), Kind: fd.GetKind(), Name: fd.GetName(), UID: fd.GetUID(),
 			Controller: ptr.To(true), BlockOwnerDeletion: ptr.To(true),
 		}}
-		return s.Client.Create(ctx, cm)
+		return s.Client.Create(ctx, cm, client.FieldOwner("siesta"))
 	}
 	if maps.Equal(cm.Data, data) {
 		return nil
 	}
 	patch := client.MergeFrom(cm.DeepCopy())
 	cm.Data = data
-	return s.Client.Patch(ctx, cm, patch)
+	return s.Client.Patch(ctx, cm, patch, client.FieldOwner("siesta"))
 }

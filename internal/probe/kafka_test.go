@@ -71,6 +71,14 @@ func TestKafkaEndOffsets(t *testing.T) {
 		t.Fatal("group without commits must be unknown")
 	}
 	adm := kadm.NewClient(cl)
+	var partial kadm.Offsets
+	partial.Add(kadm.Offset{Topic: "in", Partition: 0, At: 1})
+	if _, err := adm.CommitOffsets(ctx, "g", partial); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := p.Lag(ctx, "g", []string{"in"}); ok {
+		t.Fatal("a partition the group never committed must make lag unknown")
+	}
 	var committed kadm.Offsets
 	committed.Add(kadm.Offset{Topic: "in", Partition: 0, At: 1})
 	committed.Add(kadm.Offset{Topic: "in", Partition: 1, At: 0})

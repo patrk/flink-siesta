@@ -11,13 +11,13 @@ metadata:
     siesta.flink.io/idle-after: 24h
     siesta.flink.io/restart: auto
 spec:
-  image: flink:1.20
-  flinkVersion: v1_20
+  image: flink:2.2
+  flinkVersion: v2_2
   flinkConfiguration:
     taskmanager.numberOfTaskSlots: "1"
     restart-strategy.type: none
-    state.savepoints.dir: file:///flink-data/savepoints
-    state.checkpoints.dir: file:///flink-data/checkpoints
+    execution.checkpointing.savepoint-dir: file:///flink-data/savepoints
+    execution.checkpointing.dir: file:///flink-data/checkpoints
   serviceAccount: flink
   jobManager: { resource: { memory: "1024m", cpu: 0.5 } }
   taskManager: { resource: { memory: "1024m", cpu: 0.5 } }

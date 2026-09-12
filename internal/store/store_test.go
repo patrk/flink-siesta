@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -61,5 +63,63 @@ func TestStoreMigratesFromAnnotations(t *testing.T) {
 	got, ok, err := s.Load(context.Background(), fd)
 	if err != nil || !ok || got.Phase != state.Suspended || got.Snapshot["t-0"] != "9" {
 		t.Fatalf("state written by an older version must still load: ok=%v err=%v %+v", ok, err, got)
+	}
+}
+
+// countingClient counts writes so a test can prove an unchanged state is not written.
+type countingClient struct {
+	client.Client
+	patches, creates int
+}
+
+func (c *countingClient) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+	c.patches++
+	return c.Client.Patch(ctx, obj, patch, opts...)
+}
+
+func (c *countingClient) Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
+	c.creates++
+	return c.Client.Create(ctx, obj, opts...)
+}
+
+func TestStoreDoesNotWriteUnchangedStateAndRecreatesAfterDeletion(t *testing.T) {
+	base := fake.NewClientBuilder().WithScheme(scheme.Scheme).Build()
+	cc := &countingClient{Client: base}
+	s := Store{Client: cc, Reader: base, Prefix: "siesta.flink.io"}
+	ctx := context.Background()
+	fd := flink.New()
+	fd.SetNamespace("ns")
+	fd.SetName("job")
+	fd.SetUID("uid-2")
+	st := state.Initial(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
+
+	for range 3 {
+		if err := s.Save(ctx, fd, st); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if cc.creates != 1 || cc.patches != 0 {
+		t.Fatalf("three saves of the same state: want 1 create, 0 patches; got %d, %d", cc.creates, cc.patches)
+	}
+	st.Reason = "changed"
+	if err := s.Save(ctx, fd, st); err != nil {
+		t.Fatal(err)
+	}
+	if cc.patches != 1 {
+		t.Fatalf("a changed state must be patched once, got %d", cc.patches)
+	}
+
+	var cm corev1.ConfigMap
+	if err := base.Get(ctx, types.NamespacedName{Namespace: "ns", Name: "siesta-job"}, &cm); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.Delete(ctx, &cm); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(ctx, fd, st); err != nil {
+		t.Fatal(err)
+	}
+	if cc.creates != 2 {
+		t.Fatalf("a deleted ConfigMap must be recreated, creates=%d", cc.creates)
 	}
 }

@@ -94,6 +94,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		r.event(fd, corev1.EventTypeNormal, "SourceReachable", "Probe", "offsets readable again")
 	}
 	d.Next.SourceDown = !obs.Known
+
+	if r.DryRun && d.Action != decide.None {
+		d = shadow(prev, d)
+	}
 	metrics.SetState(req.Namespace, req.Name, string(d.Next.Phase))
 	if d.Action != decide.None {
 		metrics.Transitions.WithLabelValues(req.Namespace, req.Name, d.Action.String()).Inc()
@@ -112,8 +116,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	switch {
 	case !humanVisible:
 		// nothing to write on the object
-	case r.DryRun:
-		err = p.annotate(ctx, fd, d.Next)
 	case d.Action == decide.Suspend:
 		err = p.suspend(ctx, fd, d.Next, d.Reason)
 	case d.Action == decide.Resume:
@@ -137,4 +139,14 @@ func (r *Reconciler) event(fd *unstructured.Unstructured, kind, reason, action, 
 	if r.Recorder != nil {
 		r.Recorder.Eventf(fd, nil, kind, reason, action, "%s", note)
 	}
+}
+
+// shadow turns a decision into a record of what would have happened: the observation is kept
+// (so idle detection keeps working), the phase and clocks are not, and the reason says so.
+// Shadow mode must never write a state the cluster is not actually in.
+func shadow(prev state.State, d decide.Decision) decide.Decision {
+	next := d.Next
+	next.Phase, next.SuspendedAt, next.AwakeSince, next.Restarts, next.ResumedAt = prev.Phase, prev.SuspendedAt, prev.AwakeSince, prev.Restarts, prev.ResumedAt
+	next.Reason = "dry-run: would " + d.Action.String() + ": " + d.Reason
+	return decide.Decision{Action: decide.None, Next: next, Reason: next.Reason}
 }

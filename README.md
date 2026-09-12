@@ -100,25 +100,29 @@ per namespace and cluster.
 
 ## With Argo CD or Flux
 
-Siesta writes `spec.job.state` and two annotations on FlinkDeployments. A GitOps tool that
-owns those objects sees that as drift and, with self-heal on, reverts it. Tell it to leave
-those fields alone. For Argo CD:
+Siesta sets `spec.job.state` and two annotations on FlinkDeployments, using the field
+manager `siesta`. A GitOps tool that owns those fields sees drift and, with self-heal on,
+reverts it. Three ways to avoid that, best first:
 
-    spec:
-      ignoreDifferences:
-        - group: flink.apache.org
-          kind: FlinkDeployment
-          jsonPointers:
-            - /spec/job/state
-            - /metadata/annotations/siesta.flink.io~1state
-            - /metadata/annotations/siesta.flink.io~1reason
-      syncPolicy:
-        syncOptions: [RespectIgnoreDifferences=true]
+1. **Do not declare `spec.job.state` in Git.** The CRD defaults it to `running`, so the
+   manifest deploys the same, and GitOps tools only detect drift on fields they manage. A
+   field nobody declares belongs to whoever sets it. Works for Argo CD and Flux alike.
+2. **Argo CD: ignore by manager.** No paths to list:
 
-For Flux, exclude the same fields with a `.spec.ignore` entry on the Kustomization, or let
-Siesta own them through server-side apply field management. The ConfigMaps Siesta creates
-are owned by the deployment and carry the `app.kubernetes.io/managed-by: flink-siesta`
-label; GitOps tools ignore objects they did not create.
+       spec:
+         ignoreDifferences:
+           - group: flink.apache.org
+             kind: FlinkDeployment
+             managedFieldsManagers: [siesta]
+         syncPolicy:
+           syncOptions: [RespectIgnoreDifferences=true]
+
+3. **Argo CD: ignore by path**, if you cannot use managed fields:
+   `/spec/job/state`, `/metadata/annotations/siesta.flink.io~1state`,
+   `/metadata/annotations/siesta.flink.io~1reason` under `jsonPointers`.
+
+The ConfigMaps Siesta creates are owned by the deployment and labelled
+`app.kubernetes.io/managed-by: flink-siesta`; GitOps tools ignore objects they did not apply.
 
 ## Scale
 
@@ -151,7 +155,8 @@ minutes, and any transition with `action="mark-unrecoverable"`.
 
 - Flink Kubernetes Operator 1.10+ (uses `spec.job.state`, `upgradeMode: savepoint`,
   `status.jobStatus.upgradeSavepointPath`, `status.lifecycleState`).
-- `state.savepoints.dir` configured on the FlinkDeployment, and `upgradeMode: savepoint` or
+- A savepoint directory configured on the FlinkDeployment (`execution.checkpointing.savepoint-dir`
+  on Flink 2.x, `state.savepoints.dir` on 1.x), and `upgradeMode: savepoint` or
   `last-state`. The controller never changes the upgrade mode; on `stateless` it refuses to
   suspend and says so in an Event, because a resume would replay the topic from the start.
 - A Kafka credential with DESCRIBE on the topics.
