@@ -35,6 +35,8 @@ spec:
           args:
             - --annotation-prefix={{ .Values.config.annotationPrefix }}
             - --dry-run={{ .Values.config.dryRun }}
+            - --poll-interval={{ .Values.config.pollInterval }}
+            - --probe-timeout={{ .Values.config.probeTimeout }}
             - --restart-max={{ .Values.config.restart.maxRestarts }}
             - --restart-window={{ .Values.config.restart.window }}
             - --failing-after={{ .Values.config.restart.failingAfter }}

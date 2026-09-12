@@ -34,9 +34,11 @@ func Live(u *unstructured.Unstructured) decide.Live {
 	if upgradeMode == "" {
 		upgradeMode = "stateless" // the CRD default
 	}
+	savepoint, _, _ := unstructured.NestedString(u.Object, "status", "jobStatus", "upgradeSavepointPath")
 	return decide.Live{
 		SpecJobState:   specState,
 		UpgradeMode:    upgradeMode,
+		SavepointPath:  savepoint,
 		Generation:     u.GetGeneration(),
 		JobState:       jobState,
 		LifecycleState: lifecycle,

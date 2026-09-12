@@ -7,6 +7,21 @@ ns=default
 ctx=${KUBE_CONTEXT:-kind-siesta}
 k() { kubectl --context "$ctx" "$@"; }
 
+# Manifests are written for Flink 2.x; FLINK_VERSION renders them for the version under test.
+# 1.x still uses the pre-2.0 configuration keys, everything else is the same.
+FLINK_VERSION=${FLINK_VERSION:-2.2}
+render() {
+  local out; out=$(mktemp)
+  sed -e "s#image: flink:2.2#image: flink:${FLINK_VERSION}#" \
+      -e "s#flinkVersion: v2_2#flinkVersion: v${FLINK_VERSION/./_}#" "$1" > "$out"
+  if [ "${FLINK_VERSION%%.*}" = 1 ]; then
+    sed -i.bak -e 's#execution.checkpointing.savepoint-dir#state.savepoints.dir#' \
+               -e 's#execution.checkpointing.dir#state.checkpoints.dir#' "$out" && rm -f "$out.bak"
+  fi
+  echo "$out"
+}
+echo "flink ${FLINK_VERSION}, operator chart $(k get deploy flink-kubernetes-operator -o jsonpath='{.metadata.labels.helm\.sh/chart}' 2>/dev/null)"
+
 wait_for() { # $1 = jsonpath expr, $2 = expected, $3 = timeout s
   local i=0; until [ "$(k -n $ns get flinkdeployment example -o jsonpath="$1" 2>/dev/null)" = "$2" ]; do
     i=$((i+5)); [ $i -ge "$3" ] && { echo "timeout waiting for $1 = $2"; k -n $ns describe flinkdeployment example | tail -30; exit 1; }
@@ -21,7 +36,7 @@ k -n $ns rollout status deploy/kafka --timeout=120s
 until k -n $ns exec deploy/kafka -- /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1; do sleep 2; done
 k -n $ns exec deploy/kafka -- /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --if-not-exists --topic e2e-in --partitions 1
 
-k -n $ns apply -f "$here/flinkdeployment.yaml"
+k -n $ns apply -f "$(render "$here/flinkdeployment.yaml")"
 wait_for '{.status.jobStatus.state}' RUNNING 300
 
 helm --kube-context "$ctx" upgrade --install siesta "$here/../helm/flink-siesta" -n $ns \
@@ -70,7 +85,7 @@ k -n $ns delete flinkdeployment example --wait=true
 i=0; until ! k -n $ns get configmap siesta-example >/dev/null 2>&1; do i=$((i+5)); [ $i -ge 120 ] && { echo "ConfigMap siesta-example was not garbage-collected"; exit 1; }; sleep 5; done
 
 echo "scenario 2: a job that fails terminally is restarted twice, then marked unrecoverable"
-k -n $ns apply -f "$here/failing.yaml"
+k -n $ns apply -f "$(render "$here/failing.yaml")"
 wait_on() { # like wait_for, for the failing deployment, substring match on annotation/field
   local i=0; until k -n $ns get flinkdeployment failing -o jsonpath="$1" 2>/dev/null | grep -q "$2"; do
     i=$((i+5)); [ $i -ge "$3" ] && { echo "timeout waiting for $1 ~ $2"; k -n $ns describe flinkdeployment failing | tail -20; exit 1; }

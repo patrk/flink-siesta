@@ -1,0 +1,39 @@
+name: nightly
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  e2e-matrix:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        operator: ["1.13.0", "1.14.0", "1.15.0"]
+        flink: ["1.20", "2.0", "2.2"]
+    name: e2e operator ${{ matrix.operator }} flink ${{ matrix.flink }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: helm/kind-action@v1.15.0
+        with: { cluster_name: siesta, config: e2e/kind.yaml }
+      - run: make kind-deps e2e
+        env:
+          FLINK_OPERATOR_VERSION: ${{ matrix.operator }}
+          FLINK_VERSION: ${{ matrix.flink }}
+
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version-file: go.mod }
+      - run: make envtest
+      - run: make bench | tee bench.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bench-${{ github.run_id }}
+          path: bench.txt
+          retention-days: 90

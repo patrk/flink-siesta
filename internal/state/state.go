@@ -27,6 +27,7 @@ type State struct {
 	ResumedAt      time.Time // set when we resume; cleared, and the latency reported, once the job is RUNNING
 	Pending        int64     // records the consumer group has not consumed, last time we could tell
 	SourceDown     bool      // the source could not be asked last tick; drives one event per edge
+	SuspendChecked bool      // we have seen the operator complete our suspend and checked for a savepoint
 }
 
 func Initial(now time.Time) State {
@@ -86,6 +87,7 @@ func (s State) Data() map[string]string {
 		"generation":       strconv.FormatInt(s.Generation, 10),
 		"pending":          strconv.FormatInt(s.Pending, 10),
 		"source-down":      strconv.FormatBool(s.SourceDown),
+		"suspend-checked":  strconv.FormatBool(s.SuspendChecked),
 	}
 }
 
@@ -113,6 +115,7 @@ func FromData(d map[string]string) (State, bool) {
 	s.Generation, _ = strconv.ParseInt(d["generation"], 10, 64)
 	s.Pending, _ = strconv.ParseInt(d["pending"], 10, 64)
 	s.SourceDown, _ = strconv.ParseBool(d["source-down"])
+	s.SuspendChecked, _ = strconv.ParseBool(d["suspend-checked"])
 	return s, true
 }
 

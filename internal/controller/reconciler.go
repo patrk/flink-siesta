@@ -23,7 +23,10 @@ import (
 	"github.com/patrk/flink-siesta/internal/store"
 )
 
-const requeue = time.Minute
+const (
+	defaultPollInterval = time.Minute
+	defaultProbeTimeout = 10 * time.Second
+)
 
 type Reconciler struct {
 	client.Client
@@ -35,6 +38,24 @@ type Reconciler struct {
 	Recorder recorder.EventRecorder
 	Now      func() time.Time // injectable clock; tests freeze it
 	Store    store.Store
+	// PollInterval is how often each deployment is revisited; ProbeTimeout bounds one source call
+	// so a hung broker degrades to "unknown" for one deployment instead of freezing the worker.
+	PollInterval time.Duration
+	ProbeTimeout time.Duration
+}
+
+func (r *Reconciler) requeue() time.Duration {
+	if r.PollInterval > 0 {
+		return r.PollInterval
+	}
+	return defaultPollInterval
+}
+
+func (r *Reconciler) probeTimeout() time.Duration {
+	if r.ProbeTimeout > 0 {
+		return r.ProbeTimeout
+	}
+	return defaultProbeTimeout
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -71,13 +92,32 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if !seen {
 		prev = state.Initial(now)
 	}
+	if len(pol.Problems) > 0 {
+		// Ours, but not usable. Say why, once, and do nothing until the annotations are fixed.
+		reason := "invalid policy: " + strings.Join(pol.Problems, "; ")
+		if prev.Reason != reason {
+			r.event(fd, corev1.EventTypeWarning, "InvalidPolicy", "Validate", reason)
+			next := prev
+			next.Reason = reason
+			if err := r.Store.Save(ctx, fd, next); err != nil {
+				return ctrl.Result{}, err
+			}
+			p := patcher{Client: r.Client, Prefix: r.Prefix, Recorder: r.Recorder}
+			if err := p.annotate(ctx, fd, next); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		return ctrl.Result{RequeueAfter: r.requeue()}, nil
+	}
 	obs := decide.Observation{}
-	obs.Snapshot, obs.Known = r.Probe.Observe(ctx, pol.Sources)
+	pctx, cancel := context.WithTimeout(ctx, r.probeTimeout())
+	defer cancel()
+	obs.Snapshot, obs.Known = r.Probe.Observe(pctx, pol.Sources)
 	if !obs.Known {
 		metrics.ProbeErrors.WithLabelValues("offsets").Inc()
 	}
 	if pol.ConsumerGroup != "" && r.Lag != nil {
-		obs.Pending, obs.LagKnown = r.Lag.Lag(ctx, pol.ConsumerGroup, pol.Sources)
+		obs.Pending, obs.LagKnown = r.Lag.Lag(pctx, pol.ConsumerGroup, pol.Sources)
 		if !obs.LagKnown {
 			metrics.ProbeErrors.WithLabelValues("lag").Inc()
 		}
@@ -94,6 +134,20 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		r.event(fd, corev1.EventTypeNormal, "SourceReachable", "Probe", "offsets readable again")
 	}
 	d.Next.SourceDown = !obs.Known
+
+	// The first time the operator reports our suspend as complete, check it took a savepoint.
+	// It falls back to last-state when a savepoint fails; the job still resumes, from an older
+	// checkpoint, and an operator on call should know.
+	live := flink.Live(fd)
+	if d.Next.Phase == state.Suspended && !prev.SuspendChecked && live.LifecycleState == "SUSPENDED" {
+		d.Next.SuspendChecked = true
+		if live.SavepointPath == "" {
+			r.event(fd, corev1.EventTypeWarning, "SuspendedWithoutSavepoint", "Suspend", "operator completed the suspend without a savepoint; resume will use the last checkpoint")
+		}
+	}
+	if d.Next.Phase != state.Suspended {
+		d.Next.SuspendChecked = false
+	}
 
 	if r.DryRun && d.Action != decide.None {
 		d = shadow(prev, d)
@@ -132,7 +186,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err != nil {
 		return ctrl.Result{}, err // controller-runtime retries with backoff
 	}
-	return ctrl.Result{RequeueAfter: requeue}, nil
+	return ctrl.Result{RequeueAfter: r.requeue()}, nil
 }
 
 func (r *Reconciler) event(fd *unstructured.Unstructured, kind, reason, action, note string) {

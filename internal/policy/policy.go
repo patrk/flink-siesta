@@ -21,8 +21,12 @@ type Policy struct {
 	// ConsumerGroup, when set, makes "idle" also require that the group has consumed everything
 	// (lag zero). Empty means only "no new input" is checked.
 	ConsumerGroup string
+	// Problems lists values that were missing or unparsable. A policy with problems is still
+	// "ours" (mode is set) but must not be acted on; the reconciler reports them once.
+	Problems []string
 }
 
+// Read returns ok=false when the object carries no policy at all (not ours to manage).
 func Read(prefix string, ann map[string]string) (Policy, bool) {
 	mode, has := ann[prefix+"/mode"]
 	if !has {
@@ -30,35 +34,50 @@ func Read(prefix string, ann map[string]string) (Policy, bool) {
 	}
 	p := Policy{
 		Mode:          ModeAuto,
-		IdleAfter:     parseDuration(ann[prefix+"/idle-after"], 14*24*time.Hour),
-		MinAwake:      parseDuration(ann[prefix+"/min-awake"], time.Hour),
 		Restart:       !strings.EqualFold(ann[prefix+"/restart"], "off"),
 		ConsumerGroup: strings.TrimSpace(ann[prefix+"/consumer-group"]),
 	}
-	if strings.EqualFold(mode, "off") {
+	switch {
+	case strings.EqualFold(mode, "off"):
 		p.Mode = ModeOff
+	case strings.EqualFold(mode, "auto"):
+	default:
+		p.Problems = append(p.Problems, prefix+"/mode must be auto or off, got "+mode)
 	}
+	p.IdleAfter = p.duration(prefix+"/idle-after", ann, 14*24*time.Hour)
+	p.MinAwake = p.duration(prefix+"/min-awake", ann, time.Hour)
 	for _, s := range strings.Split(ann[prefix+"/sources"], ",") {
 		if s = strings.TrimSpace(s); s != "" {
 			p.Sources = append(p.Sources, s)
 		}
 	}
-	return p, len(p.Sources) > 0
+	if len(p.Sources) == 0 {
+		p.Problems = append(p.Problems, prefix+"/sources is required: comma-separated topic names")
+	}
+	return p, true
 }
 
-func parseDuration(s string, dflt time.Duration) time.Duration {
+// duration parses an annotation, recording a problem instead of silently using the default.
+func (p *Policy) duration(key string, ann map[string]string, dflt time.Duration) time.Duration {
+	raw, has := ann[key]
+	if !has || strings.TrimSpace(raw) == "" {
+		return dflt
+	}
+	d, ok := parseDuration(raw)
+	if !ok {
+		p.Problems = append(p.Problems, key+" is not a duration: "+raw)
+		return dflt
+	}
+	return d
+}
+
+// parseDuration accepts Go durations ("30m", "2h") plus a "d" suffix, which time.ParseDuration lacks.
+func parseDuration(s string) (time.Duration, bool) {
 	s = strings.TrimSpace(s)
-	if s == "" {
-		return dflt
-	}
 	if strings.HasSuffix(s, "d") {
-		if d, err := time.ParseDuration(strings.TrimSuffix(s, "d") + "h"); err == nil {
-			return d * 24
-		}
-		return dflt
+		d, err := time.ParseDuration(strings.TrimSuffix(s, "d") + "h")
+		return d * 24, err == nil
 	}
-	if d, err := time.ParseDuration(s); err == nil {
-		return d
-	}
-	return dflt
+	d, err := time.ParseDuration(s)
+	return d, err == nil
 }

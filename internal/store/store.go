@@ -36,6 +36,11 @@ func (s Store) Load(ctx context.Context, fd *unstructured.Unstructured) (state.S
 	err := s.Reader.Get(ctx, types.NamespacedName{Namespace: fd.GetNamespace(), Name: Name(fd.GetName())}, &cm)
 	switch {
 	case err == nil:
+		if !ownedBy(&cm, fd) {
+			// Left by a previous deployment of the same name, not yet garbage-collected. Its state
+			// belongs to a dead object; this one starts fresh.
+			return state.State{}, false, nil
+		}
 		st, ok := state.FromData(cm.Data)
 		return st, ok, nil
 	case client.IgnoreNotFound(err) == nil:
@@ -63,10 +68,28 @@ func (s Store) Save(ctx context.Context, fd *unstructured.Unstructured, st state
 		}}
 		return s.Client.Create(ctx, cm, client.FieldOwner("siesta"))
 	}
+	if !ownedBy(cm, fd) {
+		// Replace the dead deployment's ConfigMap rather than write into an object about to vanish.
+		err := s.Client.Delete(ctx, cm)
+		if client.IgnoreNotFound(err) != nil {
+			return fmt.Errorf("replace stale state: %w", err)
+		}
+		return s.Save(ctx, fd, st)
+	}
 	if maps.Equal(cm.Data, data) {
 		return nil
 	}
 	patch := client.MergeFrom(cm.DeepCopy())
 	cm.Data = data
 	return s.Client.Patch(ctx, cm, patch, client.FieldOwner("siesta"))
+}
+
+// ownedBy: the ConfigMap's owner reference points at this very deployment (same UID).
+func ownedBy(cm *corev1.ConfigMap, fd *unstructured.Unstructured) bool {
+	for _, o := range cm.OwnerReferences {
+		if o.UID == fd.GetUID() {
+			return true
+		}
+	}
+	return false
 }

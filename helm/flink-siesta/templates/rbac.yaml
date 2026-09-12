@@ -9,7 +9,7 @@ rules:
     verbs: ["get", "list", "watch", "patch"]
   - apiGroups: [""]
     resources: ["configmaps"]
-    verbs: ["get", "create", "update", "patch"]
+    verbs: ["get", "create", "update", "patch", "delete"]
   - apiGroups: ["events.k8s.io"]
     resources: ["events"]
     verbs: ["create"]

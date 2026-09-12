@@ -77,6 +77,8 @@ func TestDecide(t *testing.T) {
 		{"restart off: a failed job is left alone", withRestart(auto, false), state.Initial(t0), Live{SpecJobState: "running", UpgradeMode: "savepoint", JobState: "FAILED", LifecycleState: "FAILED"}, seen(snap("1")), t0, None},
 		{"RESTARTING under failing-after is not failing", auto, state.Initial(t0), Live{SpecJobState: "running", UpgradeMode: "savepoint", JobState: "RESTARTING", LifecycleState: "STABLE"}, seen(snap("1")), t0.Add(9 * time.Minute), None},
 		{"RESTARTING over failing-after is failing", auto, state.Initial(t0), Live{SpecJobState: "running", UpgradeMode: "savepoint", JobState: "RESTARTING", LifecycleState: "STABLE"}, seen(snap("1")), t0.Add(11 * time.Minute), Restart},
+		{"resumed outside siesta: we notice and let go", auto, suspendedState(), Live{SpecJobState: "running", UpgradeMode: "savepoint", JobState: "RUNNING", LifecycleState: "STABLE"}, seen(snap("100")), t0.Add(time.Hour), None},
+		{"suspended outside siesta: not ours to resume", auto, withSnap(state.Initial(t0), snap("1")), Live{SpecJobState: "suspended", UpgradeMode: "savepoint", JobState: "FINISHED", LifecycleState: "SUSPENDED"}, seen(snap("2")), t0.Add(time.Hour), None},
 		{"only suspends a RUNNING job", auto, withSnap(state.Initial(t0), snap("1")), Live{SpecJobState: "running", JobState: "RESTARTING", LifecycleState: "STABLE"}, seen(snap("1")), t0.Add(15 * 24 * time.Hour), Restart},
 	}
 	for _, c := range cases {
@@ -189,5 +191,16 @@ func TestSpecEditWhileActiveKeepsTheClocks(t *testing.T) {
 	got := d.Decide(auto, s, withGen(running, 2), seen(snap("1")), t0.Add(time.Hour))
 	if !got.Next.LastActivityAt.Equal(t0) || !got.Next.AwakeSince.Equal(t0) || got.Next.Generation != 2 {
 		t.Fatalf("an edit on an active job must only record the generation, got %+v", got.Next)
+	}
+}
+
+func TestResumedOutsideSiestaBecomesActiveWithFreshClocks(t *testing.T) {
+	d := New(rp)
+	got := d.Decide(auto, suspendedState(), Live{SpecJobState: "running", UpgradeMode: "savepoint", JobState: "RUNNING", LifecycleState: "STABLE"}, seen(snap("100")), t0.Add(time.Hour))
+	if got.Next.Phase != state.Active || !got.Next.AwakeSince.Equal(t0.Add(time.Hour)) || !got.Next.SuspendedAt.IsZero() {
+		t.Fatalf("a manual resume must leave us active with fresh clocks, got %+v", got.Next)
+	}
+	if got.Next.Reason != "resumed outside siesta" {
+		t.Fatalf("the reason must name it, got %q", got.Next.Reason)
 	}
 }

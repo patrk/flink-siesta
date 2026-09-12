@@ -24,7 +24,7 @@ import (
 // (make envtest downloads both). No cluster, no operator: we assert the patches we send.
 
 // startEnv boots a kube-apiserver with the FlinkDeployment CRD (make envtest). Skips without it.
-func startEnv(t *testing.T) client.Client {
+func startEnv(t testing.TB) client.Client {
 	t.Helper()
 	env := &envtest.Environment{CRDDirectoryPaths: []string{filepath.Join("..", "..", "test", "crds")}}
 	cfg, err := env.Start()
@@ -44,7 +44,7 @@ func startEnv(t *testing.T) client.Client {
 }
 
 // createDeployment makes an annotated, RUNNING+STABLE FlinkDeployment as the operator would report it.
-func createDeployment(t *testing.T, c client.Client, name, upgradeMode string) *unstructured.Unstructured {
+func createDeployment(t testing.TB, c client.Client, name, upgradeMode string) *unstructured.Unstructured {
 	t.Helper()
 	ctx := context.Background()
 	fd := flink.New()

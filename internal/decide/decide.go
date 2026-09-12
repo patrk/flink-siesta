@@ -13,6 +13,7 @@ import (
 type Live struct {
 	SpecJobState   string // "running" | "suspended"
 	UpgradeMode    string // "savepoint" | "last-state" | "stateless"; the controller never changes it
+	SavepointPath  string // status.jobStatus.upgradeSavepointPath; empty after a suspend means no savepoint was taken
 	Generation     int64  // metadata.generation; a change means someone edited the spec
 	JobState       string // Flink JobStatus: RUNNING, FAILED, RESTARTING, FINISHED, ...
 	LifecycleState string // operator: CREATED, SUSPENDED, UPGRADING, DEPLOYED, STABLE, ROLLING_BACK, ROLLED_BACK, FAILED
@@ -112,6 +113,10 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, obs Obser
 
 	switch prev.Phase {
 	case state.Suspended:
+		if live.SpecJobState == "running" {
+			// Someone else set it running. Respect that: it is awake, with a full idle window.
+			return Decision{Action: None, Next: wake(cur, now, "resumed outside siesta"), Reason: "resumed outside siesta"}
+		}
 		if !live.suspended() {
 			// We patched suspended, the operator has not reported SUSPENDED yet: a savepoint may be
 			// in flight. Writing "running" now would race it. Record activity, act next time.
@@ -128,6 +133,11 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, obs Obser
 		return Decision{Action: None, Next: cur, Reason: prev.Reason}
 
 	default: // Active
+		if live.SpecJobState == "suspended" {
+			// Suspended by someone else. Not ours to resume; say so and stay out of the way.
+			cur.Reason = "suspended outside siesta"
+			return Decision{Action: None, Next: cur, Reason: cur.Reason}
+		}
 		var resumedAfter time.Duration
 		if !cur.ResumedAt.IsZero() && live.stable() {
 			resumedAfter = now.Sub(cur.ResumedAt)

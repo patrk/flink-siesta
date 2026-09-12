@@ -82,9 +82,11 @@ Credentials come from Secrets you create; the chart never renders them into valu
       --set kafka.sasl.existingSecret=kafka-auth
 
 A private CA goes in a Secret referenced by `kafka.tls.existingSecret` under key `ca.crt`.
-The credential needs DESCRIBE on the topics you annotate (Confluent RBAC: DeveloperRead on
-the topic or prefix). One controller instance talks to one Kafka cluster; run one instance
-per namespace and cluster.
+The credential needs Describe on the topics you annotate, and Describe on the consumer group
+when `consumer-group` is set (Confluent RBAC: DeveloperRead on the topic prefix and on the
+group). One controller instance talks to one Kafka cluster; run one instance per namespace
+and cluster. `config.pollInterval` (default 1m) sets how often each deployment is visited,
+`config.probeTimeout` (default 10s) bounds one Kafka call.
 
 ## Caveats
 
@@ -97,6 +99,22 @@ per namespace and cluster.
 - **Clearing `unrecoverable`.** Fix the cause, then edit the FlinkDeployment spec. A new
   generation resets the state and the restart budget; a Warning event marks the change. Kafka
   going unreachable raises `SourceUnreachable` once and `SourceReachable` once it is back.
+- **Lag needs checkpointing.** Flink commits consumer-group offsets only on checkpoints. With
+  `consumer-group` set on a job that does not checkpoint, lag is never known and the job is
+  never suspended; the reason says `lag unknown`.
+- **Two restart mechanisms fight.** If the operator's own health-check restart
+  (`kubernetes.operator.cluster.health-check.enabled`) is on, set `restart: off` here, or the
+  other way round.
+- **A suspend can complete without a savepoint.** If the savepoint fails, the operator falls
+  back to its last checkpoint and reports the suspend as done. Siesta raises
+  `SuspendedWithoutSavepoint` once; resume still works, from that checkpoint.
+- **Manual changes are respected.** A job someone else suspends is left alone and marked
+  `suspended outside siesta`; a job someone else resumes is treated as awake with a fresh
+  idle window.
+- **Invalid annotations are reported, not guessed.** A bad duration, an unknown mode, or a
+  missing `sources` raises `InvalidPolicy` once and the job is left untouched until fixed.
+- **Application mode only.** `FlinkSessionJob` is not managed. One controller instance per
+  namespace; two instances in one namespace would share ConfigMap names and the leader lease.
 
 ## With Argo CD or Flux
 
@@ -124,13 +142,28 @@ reverts it. Three ways to avoid that, best first:
 The ConfigMaps Siesta creates are owned by the deployment and labelled
 `app.kubernetes.io/managed-by: flink-siesta`; GitOps tools ignore objects they did not apply.
 
+## Testing
+
+    make test      pure decision table, state codec, store (fake client), no Docker
+    make it        Kafka probe against Confluent's image and against Redpanda with SASL_SSL + SCRAM + TLS
+    make envtest   reconciler on a real kube-apiserver with the FlinkDeployment CRD
+    make e2e       KinD + Flink operator + Kafka: suspend, savepoint restore, resume, controller
+                   restart mid-flight, Kafka outage events, restart budget, garbage collection
+    make bench     one worker over 200 deployments on envtest, reports reconciles per minute
+
+Every push runs the first four on Flink 2.2 and operator 1.15. A nightly workflow, also run on
+tags, repeats the e2e on the full grid of operator 1.13, 1.14, 1.15 by Flink 1.20, 2.0, 2.2.
+
 ## Scale
 
 One reconcile is one cached read of the deployment, one read of its ConfigMap, one or two
 Kafka admin calls, and a write only when something changed. Every deployment is visited
 once a minute. Tens to low hundreds of deployments per namespace run on the default single
 worker with headroom; around a thousand, raise `MaxConcurrentReconciles` and the client
-rate limit, or batch the Kafka calls per tick. Horizontal scale is per namespace: one
+rate limit, or batch the Kafka calls per tick. `make bench` measures the loop itself: on an
+Apple M4 Pro, one worker does 32,000 reconciles per minute against envtest with a fake probe,
+1.9 ms each, so the API server and Kafka are the limits long before the controller is.
+Horizontal scale is per namespace: one
 instance, one Kafka cluster, one credential. Replicas exist for failover, not throughput;
 leader election keeps one active.
 

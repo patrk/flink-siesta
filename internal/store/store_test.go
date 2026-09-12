@@ -123,3 +123,36 @@ func TestStoreDoesNotWriteUnchangedStateAndRecreatesAfterDeletion(t *testing.T) 
 		t.Fatalf("a deleted ConfigMap must be recreated, creates=%d", cc.creates)
 	}
 }
+
+func TestStoreIgnoresAndReplacesStateOfAPreviousDeploymentWithTheSameName(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(scheme.Scheme).Build()
+	s := Store{Client: c, Reader: c, Prefix: "siesta.flink.io"}
+	ctx := context.Background()
+	old := flink.New()
+	old.SetNamespace("ns")
+	old.SetName("job")
+	old.SetUID("uid-old")
+	suspended := state.Initial(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
+	suspended.Phase = state.Suspended
+	if err := s.Save(ctx, old, suspended); err != nil {
+		t.Fatal(err)
+	}
+
+	fresh := flink.New() // same name, recreated: new UID, old ConfigMap not yet garbage-collected
+	fresh.SetNamespace("ns")
+	fresh.SetName("job")
+	fresh.SetUID("uid-new")
+	if _, ok, err := s.Load(ctx, fresh); err != nil || ok {
+		t.Fatalf("a recreated deployment must not inherit the old one's state, ok=%v err=%v", ok, err)
+	}
+	if err := s.Save(ctx, fresh, state.Initial(time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	var cm corev1.ConfigMap
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "ns", Name: "siesta-job"}, &cm); err != nil {
+		t.Fatal(err)
+	}
+	if len(cm.OwnerReferences) != 1 || cm.OwnerReferences[0].UID != "uid-new" || cm.Data["state"] != "active" {
+		t.Fatalf("the ConfigMap must now belong to the new deployment with fresh state, got owner=%v state=%q", cm.OwnerReferences, cm.Data["state"])
+	}
+}

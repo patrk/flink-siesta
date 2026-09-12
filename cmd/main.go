@@ -49,6 +49,8 @@ func run() error {
 		maxRestarts    = flag.Int("restart-max", 3, "restarts allowed per window")
 		restartWindow  = flag.Duration("restart-window", 30*time.Minute, "restart budget window")
 		restartBackoff = flag.Duration("restart-backoff", time.Minute, "first restart backoff; doubles each time within the window")
+		pollInterval   = flag.Duration("poll-interval", time.Minute, "how often each deployment is revisited")
+		probeTimeout   = flag.Duration("probe-timeout", 10*time.Second, "bound for one call to the source")
 		failingAfter   = flag.Duration("failing-after", 10*time.Minute, "RESTARTING longer than this counts as failing")
 		unrecoverable  = flag.String("unrecoverable-patterns", "UnknownTopicOrPartition,does not exist,ImagePullBackOff,ErrImagePull",
 			"comma-separated substrings of status.reconciliationStatus.error that mean: never restart")
@@ -90,14 +92,16 @@ func run() error {
 	defer kafkaProbe.Close()
 
 	r := &controller.Reconciler{
-		Client:   mgr.GetClient(),
-		Prefix:   *prefix,
-		DryRun:   *dryRun,
-		Probe:    kafkaProbe,
-		Lag:      kafkaProbe,
-		Recorder: mgr.GetEventRecorder("siesta"),
-		Store:    store.Store{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Prefix: *prefix},
-		Now:      time.Now,
+		Client:       mgr.GetClient(),
+		Prefix:       *prefix,
+		DryRun:       *dryRun,
+		Probe:        kafkaProbe,
+		Lag:          kafkaProbe,
+		Recorder:     mgr.GetEventRecorder("siesta"),
+		Store:        store.Store{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Prefix: *prefix},
+		Now:          time.Now,
+		PollInterval: *pollInterval,
+		ProbeTimeout: *probeTimeout,
 		Decider: decide.New(decide.RestartPolicy{
 			MaxRestarts:   *maxRestarts,
 			Window:        *restartWindow,

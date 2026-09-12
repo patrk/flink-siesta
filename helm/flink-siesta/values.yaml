@@ -6,6 +6,8 @@ replicaCount: 2
 config:
   annotationPrefix: siesta.flink.io
   dryRun: false
+  pollInterval: 1m
+  probeTimeout: 10s
   restart:
     maxRestarts: 3
     window: 30m
