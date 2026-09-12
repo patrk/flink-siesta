@@ -76,6 +76,16 @@ per namespace and cluster.
 - `state.savepoints.dir` configured on the FlinkDeployment.
 - A Kafka credential with DESCRIBE on the topics.
 
+## Install
+
+Image and chart are published to the GitHub Container Registry on every tag:
+
+    helm install siesta oci://ghcr.io/patrk/charts/flink-siesta --version 0.1.0 \
+      --set kafka.bootstrapServers=... --set kafka.securityProtocol=SASL_SSL \
+      --set kafka.sasl.existingSecret=kafka-auth
+
+The chart's `image.tag` defaults to the chart's `appVersion`, so chart and image versions move together.
+
 ## Try it
 
     make deps         # once: pin dependencies
