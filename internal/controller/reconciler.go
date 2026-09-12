@@ -17,7 +17,10 @@ import (
 	"github.com/patrk/flink-siesta/internal/state"
 )
 
-const requeue = time.Minute
+const (
+	requeue      = time.Minute
+	persistEvery = 10 * time.Minute // how often an active, busy job's activity is written back
+)
 
 type Reconciler struct {
 	client.Client
@@ -38,7 +41,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	})
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("siesta").
-		For(flink.New(), builder.WithPredicates(hasPolicy)).
+		For(flink.New(), builder.WithPredicates(hasPolicy, relevantChange(r.Prefix))).
 		Complete(r)
 }
 
@@ -66,6 +69,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	d := r.Decider.Decide(pol, prev, flink.Live(fd), obs, now)
 	log.Info("decided", "action", d.Action.String(), "reason", d.Reason)
 
+	// A busy topic moves every tick. Persisting that every minute is churn for no information:
+	// write activity for an active job at most every persistEvery. The persisted timestamp can
+	// lag reality by that much after a controller restart, which is nothing against idle-after.
+	if d.Action == decide.None && seen && onlyActivityChanged(prev, d.Next) && now.Sub(prev.LastActivityAt) < persistEvery {
+		return ctrl.Result{RequeueAfter: requeue}, nil
+	}
+
 	p := patcher{Client: r.Client, Prefix: r.Prefix, Recorder: r.Recorder}
 	var err error
 	switch {
@@ -86,4 +96,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err // controller-runtime retries with backoff
 	}
 	return ctrl.Result{RequeueAfter: requeue}, nil
+}
+
+// onlyActivityChanged: the two states differ at most in the snapshot and the activity timestamp.
+func onlyActivityChanged(prev, next state.State) bool {
+	a, b := prev, next
+	a.Snapshot, b.Snapshot = nil, nil
+	a.LastActivityAt, b.LastActivityAt = time.Time{}, time.Time{}
+	a.Reason, b.Reason = "", ""
+	return a.Phase == b.Phase && a.SuspendedAt.Equal(b.SuspendedAt) && a.AwakeSince.Equal(b.AwakeSince) &&
+		a.Restarts == b.Restarts && a.Generation == b.Generation
 }
