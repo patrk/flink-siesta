@@ -27,6 +27,15 @@ kafka:
     keyKey: tls.key
     insecureSkipVerify: false
 
+metrics:
+  service:
+    enabled: true
+    port: 8080
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    labels: {}
+
 rbac:
   create: true
 

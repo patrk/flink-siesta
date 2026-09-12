@@ -72,6 +72,23 @@ The credential needs DESCRIBE on the topics you annotate (Confluent RBAC: Develo
 the topic or prefix). One controller instance talks to one Kafka cluster; run one instance
 per namespace and cluster.
 
+## Metrics
+
+Exposed on `:8080/metrics` next to controller-runtime's own reconcile and work-queue metrics.
+The chart creates a Service for it and, opt-in, a ServiceMonitor. Any scraper works: plain
+Prometheus, the Prometheus operator, or an OpenTelemetry Collector's `prometheus` receiver.
+
+| Metric | Type | What it answers |
+|---|---|---|
+| `siesta_deployment_state{namespace,name,state}` | gauge | which deployments are suspended right now |
+| `siesta_transitions_total{namespace,name,action}` | counter | how often the controller acts; a flapping job shows here |
+| `siesta_resume_latency_seconds` | histogram | from the input that woke a job until it reports RUNNING |
+| `siesta_probe_errors_total{kind}` | counter | how often Kafka could not be asked |
+
+Metrics describe what the controller did. Nothing in the controller reads them: they observe,
+they never decide. Two alerts worth having: `siesta_probe_errors_total` rising for ten
+minutes, and any transition with `action="mark-unrecoverable"`.
+
 ## Requirements
 
 - Flink Kubernetes Operator 1.10+ (uses `spec.job.state`, `upgradeMode: savepoint`,

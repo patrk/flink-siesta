@@ -12,6 +12,7 @@ import (
 
 	"github.com/patrk/flink-siesta/internal/decide"
 	"github.com/patrk/flink-siesta/internal/flink"
+	"github.com/patrk/flink-siesta/internal/metrics"
 	"github.com/patrk/flink-siesta/internal/policy"
 	"github.com/patrk/flink-siesta/internal/probe"
 	"github.com/patrk/flink-siesta/internal/state"
@@ -49,6 +50,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	log := ctrl.LoggerFrom(ctx)
 	fd := flink.New()
 	if err := r.Get(ctx, req.NamespacedName, fd); err != nil {
+		if client.IgnoreNotFound(err) == nil {
+			metrics.Forget(req.Namespace, req.Name)
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	ann := fd.GetAnnotations()
@@ -63,11 +67,24 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	obs := decide.Observation{}
 	obs.Snapshot, obs.Known = r.Probe.Observe(ctx, pol.Sources)
+	if !obs.Known {
+		metrics.ProbeErrors.WithLabelValues("offsets").Inc()
+	}
 	if pol.ConsumerGroup != "" && r.Lag != nil {
 		obs.Pending, obs.LagKnown = r.Lag.Lag(ctx, pol.ConsumerGroup, pol.Sources)
+		if !obs.LagKnown {
+			metrics.ProbeErrors.WithLabelValues("lag").Inc()
+		}
 	}
 	d := r.Decider.Decide(pol, prev, flink.Live(fd), obs, now)
 	log.Info("decided", "action", d.Action.String(), "reason", d.Reason)
+	metrics.SetState(req.Namespace, req.Name, string(d.Next.Phase))
+	if d.Action != decide.None {
+		metrics.Transitions.WithLabelValues(req.Namespace, req.Name, d.Action.String()).Inc()
+	}
+	if d.ResumedAfter > 0 {
+		metrics.ResumeLatency.Observe(d.ResumedAfter.Seconds())
+	}
 
 	// A busy topic moves every tick. Persisting that every minute is churn for no information:
 	// write activity for an active job at most every persistEvery. The persisted timestamp can
@@ -105,5 +122,5 @@ func onlyActivityChanged(prev, next state.State) bool {
 	a.LastActivityAt, b.LastActivityAt = time.Time{}, time.Time{}
 	a.Reason, b.Reason = "", ""
 	return a.Phase == b.Phase && a.SuspendedAt.Equal(b.SuspendedAt) && a.AwakeSince.Equal(b.AwakeSince) &&
-		a.Restarts == b.Restarts && a.Generation == b.Generation
+		a.Restarts == b.Restarts && a.Generation == b.Generation && a.ResumedAt.Equal(b.ResumedAt)
 }

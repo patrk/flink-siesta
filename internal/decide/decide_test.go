@@ -135,3 +135,19 @@ func withGen(l Live, g int64) Live {
 	l.Generation = g
 	return l
 }
+
+func TestResumeLatencyIsReportedOnceRunning(t *testing.T) {
+	d := New(rp)
+	resumed := d.Decide(auto, suspendedState(), suspended, seen(snap("101")), t0)
+	if resumed.Action != Resume || !resumed.Next.ResumedAt.Equal(t0) {
+		t.Fatalf("resume must stamp ResumedAt, got %+v", resumed)
+	}
+	notYet := d.Decide(auto, resumed.Next, Live{SpecJobState: "running", UpgradeMode: "savepoint", JobState: "RECONCILING", LifecycleState: "DEPLOYED"}, seen(snap("101")), t0.Add(30*time.Second))
+	if notYet.ResumedAfter != 0 || notYet.Next.ResumedAt.IsZero() {
+		t.Fatalf("latency must not be reported before RUNNING, got %+v", notYet)
+	}
+	up := d.Decide(auto, notYet.Next, running, seen(snap("101")), t0.Add(75*time.Second))
+	if up.ResumedAfter != 75*time.Second || !up.Next.ResumedAt.IsZero() {
+		t.Fatalf("latency must be reported once and cleared, got %+v", up)
+	}
+}

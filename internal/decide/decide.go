@@ -54,6 +54,9 @@ type Decision struct {
 	Action Action
 	Next   state.State
 	Reason string
+	// ResumedAfter is non-zero on the first tick a resumed job reports RUNNING again: the time
+	// from the input that woke it to the job running. Observed, never acted on.
+	ResumedAfter time.Duration
 }
 
 type RestartPolicy struct {
@@ -80,13 +83,13 @@ func New(r RestartPolicy) *Decider { return &Decider{restart: r} }
 
 func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, obs Observation, now time.Time) Decision {
 	if live.operatorBusy() {
-		return Decision{None, prev, "operator busy: " + live.LifecycleState}
+		return Decision{Action: None, Next: prev, Reason: "operator busy: " + live.LifecycleState}
 	}
 	if p.Mode == policy.ModeOff && prev.Phase == state.Suspended {
 		if !live.suspended() {
-			return Decision{None, prev, "waiting for operator to finish suspending"}
+			return Decision{Action: None, Next: prev, Reason: "waiting for operator to finish suspending"}
 		}
-		return Decision{Resume, wake(prev, now, "suspension disabled"), "suspension disabled"}
+		return Decision{Action: Resume, Next: wake(prev, now, "suspension disabled"), Reason: "suspension disabled"}
 	}
 	// A spec edit (new generation) is a human saying "try again": it clears unrecoverable and
 	// restarts the clocks, so the deployment gets a full idle window like after a resume.
@@ -97,7 +100,7 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, obs Obser
 	prev.Generation = live.Generation
 
 	if !obs.Known {
-		return Decision{None, prev, "offsets unavailable"} // unknown never acts
+		return Decision{Action: None, Next: prev, Reason: "offsets unavailable"} // unknown never acts
 	}
 
 	moved := !maps.Equal(obs.Snapshot, prev.Snapshot)
@@ -112,30 +115,37 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, obs Obser
 		if !live.suspended() {
 			// We patched suspended, the operator has not reported SUSPENDED yet: a savepoint may be
 			// in flight. Writing "running" now would race it. Record activity, act next time.
-			return Decision{None, cur, "waiting for operator to finish suspending"}
+			return Decision{Action: None, Next: cur, Reason: "waiting for operator to finish suspending"}
 		}
 		if moved {
-			return Decision{Resume, wake(cur, now, "input observed"), "input observed"}
+			next := wake(cur, now, "input observed")
+			next.ResumedAt = now
+			return Decision{Action: Resume, Next: next, Reason: "input observed"}
 		}
-		return Decision{None, cur, "idle"}
+		return Decision{Action: None, Next: cur, Reason: "idle"}
 
 	case state.Unrecoverable:
-		return Decision{None, cur, prev.Reason}
+		return Decision{Action: None, Next: cur, Reason: prev.Reason}
 
 	default: // Active
+		var resumedAfter time.Duration
+		if !cur.ResumedAt.IsZero() && live.stable() {
+			resumedAfter = now.Sub(cur.ResumedAt)
+			cur.ResumedAt = time.Time{}
+		}
 		if r := d.unrecoverable(live); r != "" {
 			cur.Phase, cur.Reason = state.Unrecoverable, r
-			return Decision{MarkUnrecoverable, cur, r}
+			return Decision{Action: MarkUnrecoverable, Next: cur, Reason: r}
 		}
 		if p.Restart && d.failing(live, cur, now) {
 			if cur.Restarts.Allows(now, d.restart.MaxRestarts, d.restart.Window) {
 				cur.Restarts = cur.Restarts.Consume(now, d.restart.Window, d.restart.BaseBackoff, d.restart.Multiplier)
 				cur.AwakeSince = now
 				cur.Reason = fmt.Sprintf("restart %d", cur.Restarts.Count)
-				return Decision{Restart, cur, fmt.Sprintf("job %s, restart %d", live.JobState, cur.Restarts.Count)}
+				return Decision{Action: Restart, Next: cur, Reason: fmt.Sprintf("job %s, restart %d", live.JobState, cur.Restarts.Count)}
 			}
 			cur.Phase, cur.Reason = state.Unrecoverable, "restart budget exhausted"
-			return Decision{MarkUnrecoverable, cur, cur.Reason}
+			return Decision{Action: MarkUnrecoverable, Next: cur, Reason: cur.Reason}
 		}
 		if p.Mode == policy.ModeAuto &&
 			live.stable() && live.SpecJobState == "running" &&
@@ -143,22 +153,22 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, obs Obser
 			now.After(cur.AwakeSince.Add(p.MinAwake)) {
 			if !live.keepsPosition() {
 				cur.Reason = "suspend refused: upgradeMode " + live.UpgradeMode + " would lose the job's position"
-				return Decision{Refuse, cur, cur.Reason}
+				return Decision{Action: Refuse, Next: cur, Reason: cur.Reason}
 			}
 			if p.ConsumerGroup != "" {
 				// Idle also means caught up: nothing pending for the job's consumer group.
 				if !obs.LagKnown {
-					return Decision{None, cur, "lag unknown for group " + p.ConsumerGroup}
+					return Decision{Action: None, Next: cur, Reason: "lag unknown for group " + p.ConsumerGroup}
 				}
 				if obs.Pending > 0 {
-					return Decision{None, cur, fmt.Sprintf("%d records pending for group %s", obs.Pending, p.ConsumerGroup)}
+					return Decision{Action: None, Next: cur, Reason: fmt.Sprintf("%d records pending for group %s", obs.Pending, p.ConsumerGroup)}
 				}
 			}
 			cur.Phase, cur.SuspendedAt = state.Suspended, now
 			cur.Reason = "no input for " + p.IdleAfter.String()
-			return Decision{Suspend, cur, cur.Reason}
+			return Decision{Action: Suspend, Next: cur, Reason: cur.Reason}
 		}
-		return Decision{None, cur, "active"}
+		return Decision{Action: None, Next: cur, Reason: "active", ResumedAfter: resumedAfter}
 	}
 }
 

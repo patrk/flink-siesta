@@ -23,7 +23,8 @@ type State struct {
 	AwakeSince     time.Time
 	Restarts       RestartBudget
 	Reason         string
-	Generation     int64 // metadata.generation last seen; a newer one clears unrecoverable
+	Generation     int64     // metadata.generation last seen; a newer one clears unrecoverable
+	ResumedAt      time.Time // set when we resume; cleared, and the latency reported, once the job is RUNNING
 }
 
 func Initial(now time.Time) State {
@@ -51,6 +52,7 @@ func Read(prefix string, ann map[string]string) (State, bool) {
 	s.SuspendedAt = parseTime(ann[prefix+"/suspended-at"])
 	s.AwakeSince = parseTime(ann[prefix+"/awake-since"])
 	s.Generation, _ = strconv.ParseInt(ann[prefix+"/generation"], 10, 64)
+	s.ResumedAt = parseTime(ann[prefix+"/resumed-at"])
 	return s, true
 }
 
@@ -66,6 +68,7 @@ func (s State) Annotations(prefix string) map[string]string {
 		prefix + "/awake-since":      formatTime(s.AwakeSince),
 		prefix + "/reason":           s.Reason,
 		prefix + "/generation":       strconv.FormatInt(s.Generation, 10),
+		prefix + "/resumed-at":       formatTime(s.ResumedAt),
 	}
 }
 
