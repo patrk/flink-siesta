@@ -13,6 +13,19 @@ snapshot per source that changes when new input exists. Kafka end offsets ship
 first, other probes (Pulsar, Kinesis, object-store prefixes) plug in behind one
 interface. No CRD, no database, no metrics pipeline in the control path.
 
+## Who it is for
+
+Streaming jobs whose input is bursty or dormant for days: development and test
+environments, per-tenant pipelines, change-data-capture from systems that only change during
+business hours. Those jobs keep a JobManager and TaskManagers allocated around the clock for
+nothing. Siesta takes them down after `idle-after` and brings them back on the first record.
+
+It is not for latency-sensitive jobs. A resume takes the Flink operator's restore from
+savepoint plus pod scheduling, one to a few minutes, on top of a poll interval of one minute.
+If a job must react within seconds of the first record, do not suspend it.
+
+Decisions are recorded in [`docs/adr/`](docs/adr/), one file per decision.
+
 ## How it works
 
 1. You annotate a `FlinkDeployment` with the sources it consumes and an idle window.
@@ -73,6 +86,50 @@ The credential needs DESCRIBE on the topics you annotate (Confluent RBAC: Develo
 the topic or prefix). One controller instance talks to one Kafka cluster; run one instance
 per namespace and cluster.
 
+## Caveats
+
+- **Processing time stops while suspended.** Processing-time timers and windows fire late,
+  all at once, after a resume. Event-time jobs are unaffected. Suspend only jobs whose
+  semantics survive a pause.
+- **Only the declared sources are watched.** A job reading a second, non-Kafka source (a
+  broadcast stream, a JDBC lookup) is not resumed by activity there. `sources` is written by
+  hand and can drift from the job graph; keep it next to the job definition that owns it.
+- **Clearing `unrecoverable`.** Fix the cause, then edit the FlinkDeployment spec. A new
+  generation resets the state and the restart budget; a Warning event marks the change. Kafka
+  going unreachable raises `SourceUnreachable` once and `SourceReachable` once it is back.
+
+## With Argo CD or Flux
+
+Siesta writes `spec.job.state` and two annotations on FlinkDeployments. A GitOps tool that
+owns those objects sees that as drift and, with self-heal on, reverts it. Tell it to leave
+those fields alone. For Argo CD:
+
+    spec:
+      ignoreDifferences:
+        - group: flink.apache.org
+          kind: FlinkDeployment
+          jsonPointers:
+            - /spec/job/state
+            - /metadata/annotations/siesta.flink.io~1state
+            - /metadata/annotations/siesta.flink.io~1reason
+      syncPolicy:
+        syncOptions: [RespectIgnoreDifferences=true]
+
+For Flux, exclude the same fields with a `.spec.ignore` entry on the Kustomization, or let
+Siesta own them through server-side apply field management. The ConfigMaps Siesta creates
+are owned by the deployment and carry the `app.kubernetes.io/managed-by: flink-siesta`
+label; GitOps tools ignore objects they did not create.
+
+## Scale
+
+One reconcile is one cached read of the deployment, one read of its ConfigMap, one or two
+Kafka admin calls, and a write only when something changed. Every deployment is visited
+once a minute. Tens to low hundreds of deployments per namespace run on the default single
+worker with headroom; around a thousand, raise `MaxConcurrentReconciles` and the client
+rate limit, or batch the Kafka calls per tick. Horizontal scale is per namespace: one
+instance, one Kafka cluster, one credential. Replicas exist for failover, not throughput;
+leader election keeps one active.
+
 ## Metrics
 
 Exposed on `:8080/metrics` next to controller-runtime's own reconcile and work-queue metrics.
@@ -124,7 +181,10 @@ handled as an unstructured object: the CRD is external and only six fields are r
 
 ## Status
 
-Initial development. Contract may change until first release version 0.1.0.
+0.2.x. The annotation contract above is stable; a change to it gets a new major version.
+Proven end to end on KinD against the Flink Kubernetes Operator: suspend with savepoint,
+resume from it, restart budget, unrecoverable marking. Not yet run at scale in anger; if you
+do, an issue with your numbers is the most useful thing you can send.
 
 ## Logo
 

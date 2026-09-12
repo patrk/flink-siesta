@@ -2,7 +2,11 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -80,6 +84,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	d := r.Decider.Decide(pol, prev, flink.Live(fd), obs, now)
 	log.Info("decided", "action", d.Action.String(), "reason", d.Reason)
+
+	// Reachability is reported once per edge, never per tick: an event when the source stops
+	// answering and one when it answers again. The flag lives in the store, not on the object.
+	switch {
+	case !obs.Known && !prev.SourceDown:
+		r.event(fd, corev1.EventTypeWarning, "SourceUnreachable", "Probe", "could not read offsets for "+strings.Join(pol.Sources, ","))
+	case obs.Known && prev.SourceDown:
+		r.event(fd, corev1.EventTypeNormal, "SourceReachable", "Probe", "offsets readable again")
+	}
+	d.Next.SourceDown = !obs.Known
 	metrics.SetState(req.Namespace, req.Name, string(d.Next.Phase))
 	if d.Action != decide.None {
 		metrics.Transitions.WithLabelValues(req.Namespace, req.Name, d.Action.String()).Inc()
@@ -117,4 +131,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err // controller-runtime retries with backoff
 	}
 	return ctrl.Result{RequeueAfter: requeue}, nil
+}
+
+func (r *Reconciler) event(fd *unstructured.Unstructured, kind, reason, action, note string) {
+	if r.Recorder != nil {
+		r.Recorder.Eventf(fd, nil, kind, reason, action, "%s", note)
+	}
 }

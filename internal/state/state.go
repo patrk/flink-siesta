@@ -26,6 +26,7 @@ type State struct {
 	Generation     int64     // metadata.generation last seen; a newer one clears unrecoverable
 	ResumedAt      time.Time // set when we resume; cleared, and the latency reported, once the job is RUNNING
 	Pending        int64     // records the consumer group has not consumed, last time we could tell
+	SourceDown     bool      // the source could not be asked last tick; drives one event per edge
 }
 
 func Initial(now time.Time) State {
@@ -84,6 +85,7 @@ func (s State) Data() map[string]string {
 		"resumed-at":       formatTime(s.ResumedAt),
 		"generation":       strconv.FormatInt(s.Generation, 10),
 		"pending":          strconv.FormatInt(s.Pending, 10),
+		"source-down":      strconv.FormatBool(s.SourceDown),
 	}
 }
 
@@ -110,6 +112,7 @@ func FromData(d map[string]string) (State, bool) {
 	s.ResumedAt = parseTime(d["resumed-at"])
 	s.Generation, _ = strconv.ParseInt(d["generation"], 10, 64)
 	s.Pending, _ = strconv.ParseInt(d["pending"], 10, 64)
+	s.SourceDown, _ = strconv.ParseBool(d["source-down"])
 	return s, true
 }
 
