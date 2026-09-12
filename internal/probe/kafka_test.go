@@ -65,4 +65,25 @@ func TestKafkaEndOffsets(t *testing.T) {
 	if _, ok := p.Observe(ctx, []string{"nope"}); ok {
 		t.Fatal("missing topic must be unknown, not zero")
 	}
+
+	// Lag: a group that never committed is unknown, not "caught up".
+	if _, ok := p.Lag(ctx, "g", []string{"in"}); ok {
+		t.Fatal("group without commits must be unknown")
+	}
+	adm := kadm.NewClient(cl)
+	var committed kadm.Offsets
+	committed.Add(kadm.Offset{Topic: "in", Partition: 0, At: 1})
+	committed.Add(kadm.Offset{Topic: "in", Partition: 1, At: 0})
+	if _, err := adm.CommitOffsets(ctx, "g", committed); err != nil {
+		t.Fatal(err)
+	}
+	if pending, ok := p.Lag(ctx, "g", []string{"in"}); !ok || pending != 0 {
+		t.Fatalf("want caught up (0, true), got (%d, %v)", pending, ok)
+	}
+	if err := cl.ProduceSync(ctx, &kgo.Record{Topic: "in", Partition: 1, Value: []byte("v")}).FirstErr(); err != nil {
+		t.Fatal(err)
+	}
+	if pending, ok := p.Lag(ctx, "g", []string{"in"}); !ok || pending != 1 {
+		t.Fatalf("want one pending record, got (%d, %v)", pending, ok)
+	}
 }

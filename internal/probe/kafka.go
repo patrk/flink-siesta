@@ -46,3 +46,39 @@ func (k *Kafka) Observe(ctx context.Context, topics []string) (map[string]string
 	}
 	return out, true
 }
+
+// Lag sums end offset minus the group's committed offset over every partition of the topics.
+// Flink commits the next offset to read on each checkpoint, and the end offset is the next
+// offset to write, so the difference is exactly the records not yet checkpointed as consumed.
+func (k *Kafka) Lag(ctx context.Context, group string, topics []string) (int64, bool) {
+	log := ctrl.LoggerFrom(ctx)
+	committed, err := k.adm.FetchOffsets(ctx, group)
+	if err == nil {
+		err = committed.Error()
+	}
+	if err != nil {
+		log.Info("committed offsets unavailable", "group", group, "err", err.Error())
+		return 0, false
+	}
+	ends, err := k.adm.ListEndOffsets(ctx, topics...)
+	if err == nil {
+		err = ends.Error()
+	}
+	if err != nil {
+		log.Info("end offsets unavailable", "topics", topics, "err", err.Error())
+		return 0, false
+	}
+	var pending int64
+	known := true
+	ends.Each(func(o kadm.ListedOffset) {
+		c, ok := committed.Lookup(o.Topic, o.Partition)
+		if !ok || c.Err != nil {
+			known = false // a partition this group never committed: we cannot say it is caught up
+			return
+		}
+		if d := o.Offset - c.At; d > 0 {
+			pending += d
+		}
+	})
+	return pending, known
+}

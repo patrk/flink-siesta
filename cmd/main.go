@@ -92,6 +92,7 @@ func run() error {
 		Prefix:   *prefix,
 		DryRun:   *dryRun,
 		Probe:    kafkaProbe,
+		Lag:      kafkaProbe,
 		Recorder: mgr.GetEventRecorder("siesta"),
 		Now:      time.Now,
 		Decider: decide.New(decide.RestartPolicy{

@@ -18,6 +18,9 @@ type Policy struct {
 	IdleAfter time.Duration // no input for this long -> suspend
 	MinAwake  time.Duration // never suspend sooner than this after a resume or restart
 	Restart   bool          // restart-on-failure enabled
+	// ConsumerGroup, when set, makes "idle" also require that the group has consumed everything
+	// (lag zero). Empty means only "no new input" is checked.
+	ConsumerGroup string
 }
 
 func Read(prefix string, ann map[string]string) (Policy, bool) {
@@ -26,10 +29,11 @@ func Read(prefix string, ann map[string]string) (Policy, bool) {
 		return Policy{}, false
 	}
 	p := Policy{
-		Mode:      ModeAuto,
-		IdleAfter: parseDuration(ann[prefix+"/idle-after"], 14*24*time.Hour),
-		MinAwake:  parseDuration(ann[prefix+"/min-awake"], time.Hour),
-		Restart:   !strings.EqualFold(ann[prefix+"/restart"], "off"),
+		Mode:          ModeAuto,
+		IdleAfter:     parseDuration(ann[prefix+"/idle-after"], 14*24*time.Hour),
+		MinAwake:      parseDuration(ann[prefix+"/min-awake"], time.Hour),
+		Restart:       !strings.EqualFold(ann[prefix+"/restart"], "off"),
+		ConsumerGroup: strings.TrimSpace(ann[prefix+"/consumer-group"]),
 	}
 	if strings.EqualFold(mode, "off") {
 		p.Mode = ModeOff

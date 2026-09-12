@@ -24,6 +24,7 @@ type Reconciler struct {
 	Prefix   string
 	DryRun   bool
 	Probe    probe.ActivityProbe
+	Lag      probe.LagProbe // optional; nil when the source cannot measure consumer lag
 	Decider  *decide.Decider
 	Recorder recorder.EventRecorder
 	Now      func() time.Time // injectable clock; tests freeze it
@@ -57,8 +58,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if !seen {
 		prev = state.Initial(now)
 	}
-	snapshot, known := r.Probe.Observe(ctx, pol.Sources)
-	d := r.Decider.Decide(pol, prev, flink.Live(fd), snapshot, known, now)
+	obs := decide.Observation{}
+	obs.Snapshot, obs.Known = r.Probe.Observe(ctx, pol.Sources)
+	if pol.ConsumerGroup != "" && r.Lag != nil {
+		obs.Pending, obs.LagKnown = r.Lag.Lag(ctx, pol.ConsumerGroup, pol.Sources)
+	}
+	d := r.Decider.Decide(pol, prev, flink.Live(fd), obs, now)
 	log.Info("decided", "action", d.Action.String(), "reason", d.Reason)
 
 	p := patcher{Client: r.Client, Prefix: r.Prefix, Recorder: r.Recorder}

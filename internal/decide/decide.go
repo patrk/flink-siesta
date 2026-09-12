@@ -65,11 +65,20 @@ type RestartPolicy struct {
 	Unrecoverable []string // substrings of the reconciliation error
 }
 
+// Observation is what the probes reported this tick. Known=false and LagKnown=false both mean
+// "could not ask", which is never treated as "nothing there".
+type Observation struct {
+	Snapshot map[string]string
+	Known    bool
+	Pending  int64 // records the consumer group has not consumed yet; meaningful only if LagKnown
+	LagKnown bool
+}
+
 type Decider struct{ restart RestartPolicy }
 
 func New(r RestartPolicy) *Decider { return &Decider{restart: r} }
 
-func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, snapshot map[string]string, known bool, now time.Time) Decision {
+func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, obs Observation, now time.Time) Decision {
 	if live.operatorBusy() {
 		return Decision{None, prev, "operator busy: " + live.LifecycleState}
 	}
@@ -79,19 +88,21 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, snapshot 
 		}
 		return Decision{Resume, wake(prev, now, "suspension disabled"), "suspension disabled"}
 	}
-	// A spec edit (new generation) is a human saying "try again": it clears unrecoverable.
+	// A spec edit (new generation) is a human saying "try again": it clears unrecoverable and
+	// restarts the clocks, so the deployment gets a full idle window like after a resume.
 	if prev.Phase == state.Unrecoverable && live.Generation > prev.Generation {
-		prev.Phase, prev.Restarts, prev.Reason = state.Active, state.RestartBudget{}, "spec changed"
+		prev = wake(prev, now, "spec changed")
+		prev.Restarts = state.RestartBudget{}
 	}
 	prev.Generation = live.Generation
 
-	if !known {
+	if !obs.Known {
 		return Decision{None, prev, "offsets unavailable"} // unknown never acts
 	}
 
-	moved := !maps.Equal(snapshot, prev.Snapshot)
+	moved := !maps.Equal(obs.Snapshot, prev.Snapshot)
 	cur := prev
-	cur.Snapshot = snapshot
+	cur.Snapshot = obs.Snapshot
 	if moved {
 		cur.LastActivityAt = now
 	}
@@ -133,6 +144,15 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, snapshot 
 			if !live.keepsPosition() {
 				cur.Reason = "suspend refused: upgradeMode " + live.UpgradeMode + " would lose the job's position"
 				return Decision{Refuse, cur, cur.Reason}
+			}
+			if p.ConsumerGroup != "" {
+				// Idle also means caught up: nothing pending for the job's consumer group.
+				if !obs.LagKnown {
+					return Decision{None, cur, "lag unknown for group " + p.ConsumerGroup}
+				}
+				if obs.Pending > 0 {
+					return Decision{None, cur, fmt.Sprintf("%d records pending for group %s", obs.Pending, p.ConsumerGroup)}
+				}
 			}
 			cur.Phase, cur.SuspendedAt = state.Suspended, now
 			cur.Reason = "no input for " + p.IdleAfter.String()

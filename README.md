@@ -18,7 +18,8 @@ interface. No CRD, no database, no metrics pipeline in the control path.
 1. You annotate a `FlinkDeployment` with the sources it consumes and an idle window.
 2. Every 60 s the controller reads the log end offsets of those topics (one
    `AdminClient.listOffsets` call).
-3. No movement for `idle-after` -> `spec.job.state: suspended`. The operator takes a
+3. No movement for `idle-after`, and, if you gave it the job's consumer group, nothing left
+   to consume -> `spec.job.state: suspended`. The operator takes a
    savepoint (your `upgradeMode` decides how; the controller never changes it) and tears
    the job down.
 4. Offsets move -> `spec.job.state: running`. The operator restores from the
@@ -35,6 +36,7 @@ Prefix is configurable (`siesta.annotation-prefix`, default `siesta.flink.io`).
 | `<prefix>/mode` | you | `auto` or `off` |
 | `<prefix>/sources` | you | comma-separated source refs (for Kafka, topic names) |
 | `<prefix>/source-type` | you | `kafka` (default). Other probes can be added without touching the core. |
+| `<prefix>/consumer-group` | you | optional; when set, idle also requires the group to have consumed everything (lag 0) |
 | `<prefix>/idle-after` | you | duration, e.g. `336h` |
 | `<prefix>/min-awake` | you | duration, default `1h` |
 | `<prefix>/restart` | you | `auto` or `off` |
