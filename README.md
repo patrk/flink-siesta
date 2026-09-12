@@ -18,8 +18,9 @@ interface. No CRD, no database, no metrics pipeline in the control path.
 1. You annotate a `FlinkDeployment` with the sources it consumes and an idle window.
 2. Every 60 s the controller reads the log end offsets of those topics (one
    `AdminClient.listOffsets` call).
-3. No movement for `idle-after` -> `spec.job.state: suspended`,
-   `upgradeMode: savepoint`. The operator takes a savepoint and tears the job down.
+3. No movement for `idle-after` -> `spec.job.state: suspended`. The operator takes a
+   savepoint (your `upgradeMode` decides how; the controller never changes it) and tears
+   the job down.
 4. Offsets move -> `spec.job.state: running`. The operator restores from the
    savepoint, so the Kafka source resumes at the offsets it had.
 5. All state (last offsets, timestamps, restart budget) lives in annotations on
@@ -73,7 +74,9 @@ per namespace and cluster.
 
 - Flink Kubernetes Operator 1.10+ (uses `spec.job.state`, `upgradeMode: savepoint`,
   `status.jobStatus.upgradeSavepointPath`, `status.lifecycleState`).
-- `state.savepoints.dir` configured on the FlinkDeployment.
+- `state.savepoints.dir` configured on the FlinkDeployment, and `upgradeMode: savepoint` or
+  `last-state`. The controller never changes the upgrade mode; on `stateless` it refuses to
+  suspend and says so in an Event, because a resume would replay the topic from the start.
 - A Kafka credential with DESCRIBE on the topics.
 
 ## Install

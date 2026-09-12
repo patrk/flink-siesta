@@ -11,8 +11,8 @@ import (
 var (
 	t0        = time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 	auto      = policy.Policy{Mode: policy.ModeAuto, Sources: []string{"t"}, IdleAfter: 14 * 24 * time.Hour, MinAwake: time.Hour, Restart: true}
-	running   = Live{SpecJobState: "running", JobState: "RUNNING", LifecycleState: "STABLE"}
-	suspended = Live{SpecJobState: "suspended", LifecycleState: "SUSPENDED"}
+	running   = Live{SpecJobState: "running", UpgradeMode: "savepoint", JobState: "RUNNING", LifecycleState: "STABLE"}
+	suspended = Live{SpecJobState: "suspended", UpgradeMode: "savepoint", LifecycleState: "SUSPENDED"}
 	rp        = RestartPolicy{MaxRestarts: 3, Window: 30 * time.Minute, BaseBackoff: time.Minute, Multiplier: 2, FailingAfter: 10 * time.Minute, Unrecoverable: []string{"UnknownTopicOrPartition"}}
 )
 
@@ -48,6 +48,8 @@ func TestDecide(t *testing.T) {
 		{"not before the operator is STABLE", auto, withSnap(state.Initial(t0), snap("1")), Live{SpecJobState: "running", JobState: "RUNNING", LifecycleState: "DEPLOYED"}, snap("1"), true, t0.Add(15 * 24 * time.Hour), None},
 		{"no resume while the operator is still suspending", auto, suspendedState(), Live{SpecJobState: "suspended", JobState: "RUNNING", LifecycleState: "STABLE"}, snap("101"), true, t0.Add(24 * time.Hour), None},
 		{"mode off waits for the operator too", withMode(auto, policy.ModeOff), suspendedState(), Live{SpecJobState: "suspended", JobState: "RUNNING", LifecycleState: "STABLE"}, nil, false, t0, None},
+		{"stateless upgradeMode is refused", auto, withSnap(state.Initial(t0), snap("1")), withMode2(running, "stateless"), snap("1"), true, t0.Add(15 * 24 * time.Hour), Refuse},
+		{"last-state upgradeMode is fine", auto, withSnap(state.Initial(t0), snap("1")), withMode2(running, "last-state"), snap("1"), true, t0.Add(15 * 24 * time.Hour), Suspend},
 		{"only suspends a RUNNING job", auto, withSnap(state.Initial(t0), snap("1")), Live{SpecJobState: "running", JobState: "RESTARTING", LifecycleState: "STABLE"}, snap("1"), true, t0.Add(15 * 24 * time.Hour), Restart},
 	}
 	for _, c := range cases {
@@ -82,6 +84,11 @@ func withSnap(s state.State, m map[string]string) state.State {
 	return s
 }
 
+func withMode2(l Live, upgradeMode string) Live {
+	l.UpgradeMode = upgradeMode
+	return l
+}
+
 func withMode(p policy.Policy, m policy.Mode) policy.Policy {
 	p.Mode = m
 	return p
@@ -91,4 +98,22 @@ func awoke(at time.Time) state.State {
 	s := state.Initial(t0)
 	s.Snapshot, s.LastActivityAt, s.AwakeSince = snap("100"), t0, at
 	return s
+}
+
+func TestSpecChangeClearsUnrecoverable(t *testing.T) {
+	d := New(rp)
+	stuck := state.State{Phase: state.Unrecoverable, Snapshot: snap("1"), Reason: "restart budget exhausted", Generation: 3}
+	same := d.Decide(auto, stuck, withGen(running, 3), snap("1"), true, t0)
+	if same.Next.Phase != state.Unrecoverable {
+		t.Fatalf("same generation must stay unrecoverable, got %s", same.Next.Phase)
+	}
+	edited := d.Decide(auto, stuck, withGen(running, 4), snap("1"), true, t0)
+	if edited.Next.Phase != state.Active || edited.Next.Restarts.Count != 0 {
+		t.Fatalf("a new generation must clear unrecoverable and the budget, got %+v", edited.Next)
+	}
+}
+
+func withGen(l Live, g int64) Live {
+	l.Generation = g
+	return l
 }

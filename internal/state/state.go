@@ -3,6 +3,7 @@ package state
 
 import (
 	"encoding/json"
+	"strconv"
 	"time"
 )
 
@@ -22,6 +23,7 @@ type State struct {
 	AwakeSince     time.Time
 	Restarts       RestartBudget
 	Reason         string
+	Generation     int64 // metadata.generation last seen; a newer one clears unrecoverable
 }
 
 func Initial(now time.Time) State {
@@ -48,6 +50,7 @@ func Read(prefix string, ann map[string]string) (State, bool) {
 	s.LastActivityAt = parseTime(ann[prefix+"/last-activity-at"])
 	s.SuspendedAt = parseTime(ann[prefix+"/suspended-at"])
 	s.AwakeSince = parseTime(ann[prefix+"/awake-since"])
+	s.Generation, _ = strconv.ParseInt(ann[prefix+"/generation"], 10, 64)
 	return s, true
 }
 
@@ -62,6 +65,7 @@ func (s State) Annotations(prefix string) map[string]string {
 		prefix + "/suspended-at":     formatTime(s.SuspendedAt),
 		prefix + "/awake-since":      formatTime(s.AwakeSince),
 		prefix + "/reason":           s.Reason,
+		prefix + "/generation":       strconv.FormatInt(s.Generation, 10),
 	}
 }
 

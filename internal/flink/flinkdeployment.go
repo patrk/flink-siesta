@@ -24,5 +24,16 @@ func Live(u *unstructured.Unstructured) decide.Live {
 	jobState, _, _ := unstructured.NestedString(u.Object, "status", "jobStatus", "state")
 	lifecycle, _, _ := unstructured.NestedString(u.Object, "status", "lifecycleState")
 	recErr, _, _ := unstructured.NestedString(u.Object, "status", "reconciliationStatus", "error")
-	return decide.Live{SpecJobState: specState, JobState: jobState, LifecycleState: lifecycle, ReconcileError: recErr}
+	upgradeMode, _, _ := unstructured.NestedString(u.Object, "spec", "job", "upgradeMode")
+	if upgradeMode == "" {
+		upgradeMode = "stateless" // the CRD default
+	}
+	return decide.Live{
+		SpecJobState:   specState,
+		UpgradeMode:    upgradeMode,
+		Generation:     u.GetGeneration(),
+		JobState:       jobState,
+		LifecycleState: lifecycle,
+		ReconcileError: recErr,
+	}
 }

@@ -21,7 +21,7 @@ type patcher struct {
 }
 
 func (p patcher) suspend(ctx context.Context, fd *unstructured.Unstructured, s state.State, reason string) error {
-	err := p.merge(ctx, fd, s, map[string]any{"job": map[string]any{"state": "suspended", "upgradeMode": "savepoint"}})
+	err := p.merge(ctx, fd, s, map[string]any{"job": map[string]any{"state": "suspended"}})
 	p.event(fd, err, "Suspended", reason)
 	return err
 }
@@ -35,6 +35,15 @@ func (p patcher) resume(ctx context.Context, fd *unstructured.Unstructured, s st
 func (p patcher) restart(ctx context.Context, fd *unstructured.Unstructured, s state.State, reason string, now time.Time) error {
 	err := p.merge(ctx, fd, s, map[string]any{"restartNonce": now.UnixMilli()})
 	p.event(fd, err, "Restarted", reason)
+	return err
+}
+
+// refuse records why the controller did not act and raises a Warning so it shows in kubectl describe.
+func (p patcher) refuse(ctx context.Context, fd *unstructured.Unstructured, s state.State, reason string) error {
+	err := p.annotate(ctx, fd, s)
+	if p.Recorder != nil {
+		p.Recorder.Eventf(fd, nil, corev1.EventTypeWarning, "Refused", "Suspend", "%s", reason)
+	}
 	return err
 }
 

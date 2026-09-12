@@ -12,6 +12,8 @@ import (
 
 type Live struct {
 	SpecJobState   string // "running" | "suspended"
+	UpgradeMode    string // "savepoint" | "last-state" | "stateless"; the controller never changes it
+	Generation     int64  // metadata.generation; a change means someone edited the spec
 	JobState       string // Flink JobStatus: RUNNING, FAILED, RESTARTING, FINISHED, ...
 	LifecycleState string // operator: CREATED, SUSPENDED, UPGRADING, DEPLOYED, STABLE, ROLLING_BACK, ROLLED_BACK, FAILED
 	ReconcileError string // status.reconciliationStatus.error
@@ -27,6 +29,12 @@ func (l Live) stable() bool { return l.LifecycleState == "STABLE" && l.JobState 
 // suspended: the operator completed the suspend (savepoint taken, pods gone). Only then is a resume safe.
 func (l Live) suspended() bool { return l.LifecycleState == "SUSPENDED" }
 
+// keepsPosition: suspend and resume keep the job's position only with these upgrade modes.
+// "stateless" would resume from scratch, which for a Kafka source means replaying the topic.
+func (l Live) keepsPosition() bool {
+	return l.UpgradeMode == "savepoint" || l.UpgradeMode == "last-state"
+}
+
 type Action int
 
 const (
@@ -35,10 +43,11 @@ const (
 	Resume
 	Restart
 	MarkUnrecoverable
+	Refuse // nothing patched, but the reason deserves a Warning event
 )
 
 func (a Action) String() string {
-	return [...]string{"none", "suspend", "resume", "restart", "mark-unrecoverable"}[a]
+	return [...]string{"none", "suspend", "resume", "restart", "mark-unrecoverable", "refuse"}[a]
 }
 
 type Decision struct {
@@ -70,6 +79,12 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, snapshot 
 		}
 		return Decision{Resume, wake(prev, now, "suspension disabled"), "suspension disabled"}
 	}
+	// A spec edit (new generation) is a human saying "try again": it clears unrecoverable.
+	if prev.Phase == state.Unrecoverable && live.Generation > prev.Generation {
+		prev.Phase, prev.Restarts, prev.Reason = state.Active, state.RestartBudget{}, "spec changed"
+	}
+	prev.Generation = live.Generation
+
 	if !known {
 		return Decision{None, prev, "offsets unavailable"} // unknown never acts
 	}
@@ -115,6 +130,10 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, snapshot 
 			live.stable() && live.SpecJobState == "running" &&
 			now.After(cur.LastActivityAt.Add(p.IdleAfter)) &&
 			now.After(cur.AwakeSince.Add(p.MinAwake)) {
+			if !live.keepsPosition() {
+				cur.Reason = "suspend refused: upgradeMode " + live.UpgradeMode + " would lose the job's position"
+				return Decision{Refuse, cur, cur.Reason}
+			}
 			cur.Phase, cur.SuspendedAt = state.Suspended, now
 			cur.Reason = "no input for " + p.IdleAfter.String()
 			return Decision{Suspend, cur, cur.Reason}

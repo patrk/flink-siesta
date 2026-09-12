@@ -72,6 +72,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		err = p.resume(ctx, fd, d.Next, d.Reason)
 	case d.Action == decide.Restart:
 		err = p.restart(ctx, fd, d.Next, d.Reason, now)
+	case d.Action == decide.Refuse:
+		err = p.refuse(ctx, fd, d.Next, d.Reason)
 	default:
 		err = p.annotate(ctx, fd, d.Next)
 	}
