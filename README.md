@@ -95,8 +95,8 @@ Initial development. Contract may change until first release version 0.1.0.
 
 ## Logo
 
-The mascots are *Siebenschläfer*, edible dormice: Berlin neighbours of Flink's squirrel that sleep
-seven months a year. AI-generated original artwork; not affiliated with the Apache Flink logo.
+The mascot is a *Siebenschläfer*, dormouse: Berlin neighbours of Flink's squirrel that sleep
+seven months a year. AI-generated original artwork. Not affiliated with the Apache Flink logo.
 
 ## License
 

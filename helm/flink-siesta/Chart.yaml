@@ -4,3 +4,6 @@ description: Suspend idle Flink jobs and resume them on the first new record
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
+icon: https://raw.githubusercontent.com/patrk/flink-siesta/main/docs/logo.png
+home: https://github.com/patrk/flink-siesta
+sources: [https://github.com/patrk/flink-siesta]
