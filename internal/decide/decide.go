@@ -21,6 +21,12 @@ func (l Live) operatorBusy() bool {
 	return l.LifecycleState == "UPGRADING" || l.LifecycleState == "ROLLING_BACK"
 }
 
+// stable: the operator has settled the deployment and the job runs. Only then is a suspend safe.
+func (l Live) stable() bool { return l.LifecycleState == "STABLE" && l.JobState == "RUNNING" }
+
+// suspended: the operator completed the suspend (savepoint taken, pods gone). Only then is a resume safe.
+func (l Live) suspended() bool { return l.LifecycleState == "SUSPENDED" }
+
 type Action int
 
 const (
@@ -59,6 +65,9 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, snapshot 
 		return Decision{None, prev, "operator busy: " + live.LifecycleState}
 	}
 	if p.Mode == policy.ModeOff && prev.Phase == state.Suspended {
+		if !live.suspended() {
+			return Decision{None, prev, "waiting for operator to finish suspending"}
+		}
 		return Decision{Resume, wake(prev, now, "suspension disabled"), "suspension disabled"}
 	}
 	if !known {
@@ -74,6 +83,11 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, snapshot 
 
 	switch prev.Phase {
 	case state.Suspended:
+		if !live.suspended() {
+			// We patched suspended, the operator has not reported SUSPENDED yet: a savepoint may be
+			// in flight. Writing "running" now would race it. Record activity, act next time.
+			return Decision{None, cur, "waiting for operator to finish suspending"}
+		}
 		if moved {
 			return Decision{Resume, wake(cur, now, "input observed"), "input observed"}
 		}
@@ -98,7 +112,7 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, snapshot 
 			return Decision{MarkUnrecoverable, cur, cur.Reason}
 		}
 		if p.Mode == policy.ModeAuto &&
-			live.JobState == "RUNNING" && live.SpecJobState == "running" &&
+			live.stable() && live.SpecJobState == "running" &&
 			now.After(cur.LastActivityAt.Add(p.IdleAfter)) &&
 			now.After(cur.AwakeSince.Add(p.MinAwake)) {
 			cur.Phase, cur.SuspendedAt = state.Suspended, now

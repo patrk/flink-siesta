@@ -45,6 +45,9 @@ func TestDecide(t *testing.T) {
 		{"operator busy is hands off", auto, state.Initial(t0), Live{SpecJobState: "running", JobState: "RUNNING", LifecycleState: "UPGRADING"}, snap("1"), true, t0, None},
 		{"failed job restarts", auto, state.Initial(t0), Live{SpecJobState: "running", JobState: "FAILED", LifecycleState: "STABLE"}, snap("1"), true, t0.Add(time.Minute), Restart},
 		{"unrecoverable error never restarts", auto, state.Initial(t0), Live{SpecJobState: "running", JobState: "FAILED", LifecycleState: "STABLE", ReconcileError: "org.apache.kafka.common.errors.UnknownTopicOrPartitionException"}, snap("1"), true, t0, MarkUnrecoverable},
+		{"not before the operator is STABLE", auto, withSnap(state.Initial(t0), snap("1")), Live{SpecJobState: "running", JobState: "RUNNING", LifecycleState: "DEPLOYED"}, snap("1"), true, t0.Add(15 * 24 * time.Hour), None},
+		{"no resume while the operator is still suspending", auto, suspendedState(), Live{SpecJobState: "suspended", JobState: "RUNNING", LifecycleState: "STABLE"}, snap("101"), true, t0.Add(24 * time.Hour), None},
+		{"mode off waits for the operator too", withMode(auto, policy.ModeOff), suspendedState(), Live{SpecJobState: "suspended", JobState: "RUNNING", LifecycleState: "STABLE"}, nil, false, t0, None},
 		{"only suspends a RUNNING job", auto, withSnap(state.Initial(t0), snap("1")), Live{SpecJobState: "running", JobState: "RESTARTING", LifecycleState: "STABLE"}, snap("1"), true, t0.Add(15 * 24 * time.Hour), Restart},
 	}
 	for _, c := range cases {

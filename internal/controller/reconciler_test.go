@@ -82,6 +82,14 @@ func TestReconcileSuspendsIdleAndResumesOnInput(t *testing.T) {
 		t.Fatalf("want state annotation suspended, got %q", st.Phase)
 	}
 
+	// envtest has no Flink operator; play its part and report the suspend as complete.
+	if err := unstructured.SetNestedField(fd.Object, "SUSPENDED", "status", "lifecycleState"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Status().Update(ctx, fd); err != nil {
+		t.Fatal(err)
+	}
+
 	offsets = map[string]string{"in-0": "6"}
 	now = now.Add(time.Minute)
 	reconcile()
