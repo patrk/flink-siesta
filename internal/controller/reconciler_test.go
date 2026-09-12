@@ -16,6 +16,7 @@ import (
 	"github.com/patrk/flink-siesta/internal/flink"
 	"github.com/patrk/flink-siesta/internal/probe"
 	"github.com/patrk/flink-siesta/internal/state"
+	"github.com/patrk/flink-siesta/internal/store"
 )
 
 // envtest runs a real kube-apiserver + etcd locally with the FlinkDeployment CRD applied
@@ -59,6 +60,7 @@ func TestReconcileSuspendsIdleAndResumesOnInput(t *testing.T) {
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 	offsets := map[string]string{"in-0": "5"}
 	r := &Reconciler{Client: c, Prefix: "siesta.flink.io", Now: func() time.Time { return now },
+		Store:   store.Store{Client: c, Reader: c, Prefix: "siesta.flink.io"},
 		Probe:   probe.Func(func(context.Context, []string) (map[string]string, bool) { return offsets, true }),
 		Decider: decide.New(decide.RestartPolicy{MaxRestarts: 3, Window: time.Hour, BaseBackoff: time.Minute, Multiplier: 2, FailingAfter: time.Hour})}
 	key := types.NamespacedName{Name: "job", Namespace: "default"}

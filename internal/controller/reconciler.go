@@ -16,12 +16,10 @@ import (
 	"github.com/patrk/flink-siesta/internal/policy"
 	"github.com/patrk/flink-siesta/internal/probe"
 	"github.com/patrk/flink-siesta/internal/state"
+	"github.com/patrk/flink-siesta/internal/store"
 )
 
-const (
-	requeue      = time.Minute
-	persistEvery = 10 * time.Minute // how often an active, busy job's activity is written back
-)
+const requeue = time.Minute
 
 type Reconciler struct {
 	client.Client
@@ -32,6 +30,7 @@ type Reconciler struct {
 	Decider  *decide.Decider
 	Recorder recorder.EventRecorder
 	Now      func() time.Time // injectable clock; tests freeze it
+	Store    store.Store
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -61,7 +60,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, nil
 	}
 	now := r.Now()
-	prev, seen := state.Read(r.Prefix, ann)
+	prev, seen, err := r.Store.Load(ctx, fd)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 	if !seen {
 		prev = state.Initial(now)
 	}
@@ -86,16 +88,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		metrics.ResumeLatency.Observe(d.ResumedAfter.Seconds())
 	}
 
-	// A busy topic moves every tick. Persisting that every minute is churn for no information:
-	// write activity for an active job at most every persistEvery. The persisted timestamp can
-	// lag reality by that much after a controller restart, which is nothing against idle-after.
-	if d.Action == decide.None && seen && onlyActivityChanged(prev, d.Next) && now.Sub(prev.LastActivityAt) < persistEvery {
-		return ctrl.Result{RequeueAfter: requeue}, nil
+	// The controller's memory goes to its own ConfigMap every tick: cheap, and nobody watches it.
+	// The deployment itself is touched only when something a human would want to see changed.
+	if err := r.Store.Save(ctx, fd, d.Next); err != nil {
+		return ctrl.Result{}, err
 	}
-
+	humanVisible := !seen || d.Action != decide.None || prev.Phase != d.Next.Phase || prev.Reason != d.Next.Reason
 	p := patcher{Client: r.Client, Prefix: r.Prefix, Recorder: r.Recorder}
-	var err error
 	switch {
+	case !humanVisible:
+		// nothing to write on the object
 	case r.DryRun:
 		err = p.annotate(ctx, fd, d.Next)
 	case d.Action == decide.Suspend:
@@ -106,6 +108,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		err = p.restart(ctx, fd, d.Next, d.Reason, now)
 	case d.Action == decide.Refuse:
 		err = p.refuse(ctx, fd, d.Next, d.Reason)
+	case d.Action == decide.MarkUnrecoverable:
+		err = p.markUnrecoverable(ctx, fd, d.Next, d.Reason)
 	default:
 		err = p.annotate(ctx, fd, d.Next)
 	}
@@ -113,14 +117,4 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err // controller-runtime retries with backoff
 	}
 	return ctrl.Result{RequeueAfter: requeue}, nil
-}
-
-// onlyActivityChanged: the two states differ at most in the snapshot and the activity timestamp.
-func onlyActivityChanged(prev, next state.State) bool {
-	a, b := prev, next
-	a.Snapshot, b.Snapshot = nil, nil
-	a.LastActivityAt, b.LastActivityAt = time.Time{}, time.Time{}
-	a.Reason, b.Reason = "", ""
-	return a.Phase == b.Phase && a.SuspendedAt.Equal(b.SuspendedAt) && a.AwakeSince.Equal(b.AwakeSince) &&
-		a.Restarts == b.Restarts && a.Generation == b.Generation && a.ResumedAt.Equal(b.ResumedAt)
 }

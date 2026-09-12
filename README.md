@@ -41,11 +41,12 @@ Prefix is configurable (`siesta.annotation-prefix`, default `siesta.flink.io`).
 | `<prefix>/min-awake` | you | duration, default `1h` |
 | `<prefix>/restart` | you | `auto` or `off` |
 | `<prefix>/state` | controller | `active`, `suspended`, `unrecoverable` |
-| `<prefix>/offsets` | controller | JSON map of source unit to opaque position; Kafka: `topic-partition` to end offset |
-| `<prefix>/last-activity-at` | controller | RFC 3339 |
-| `<prefix>/suspended-at`, `<prefix>/awake-since` | controller | RFC 3339 |
-| `<prefix>/restarts` | controller | JSON `{count, windowStart, nextAfter}` |
-| `<prefix>/reason` | controller | last transition reason |
+| `<prefix>/reason` | controller | why it is in that state, or why it has not changed yet |
+
+The controller's own memory (offsets snapshot, timestamps, restart budget) lives in a
+ConfigMap named `siesta-<deployment>`, owned by the deployment, one readable key per field.
+Debugging is two commands: `kubectl describe flinkdeployment <name>` for state, reason and
+the transition events; `kubectl get cm siesta-<name> -o yaml` for the numbers behind them.
 
 ## Connecting to Kafka
 

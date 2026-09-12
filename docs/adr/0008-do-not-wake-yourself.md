@@ -15,3 +15,5 @@ most every ten minutes.
 the object is not touched at all. After a controller restart the persisted activity may be
 up to ten minutes stale, so a job might be judged idle ten minutes early against a window
 measured in days. Transitions, refusals and restarts are still written immediately.
+
+*Amended by ADR 10: the write throttle is superseded by moving the controller's memory to a ConfigMap; the update-event predicate stays.*
