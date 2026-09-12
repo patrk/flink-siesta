@@ -138,14 +138,20 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, obs Obser
 			return Decision{Action: MarkUnrecoverable, Next: cur, Reason: r}
 		}
 		if p.Restart && d.failing(live, cur, now) {
-			if cur.Restarts.Allows(now, d.restart.MaxRestarts, d.restart.Window) {
+			switch {
+			case cur.Restarts.InBackoff(now, d.restart.Window):
+				// The last restart is still taking effect, or its backoff has not elapsed. Checked
+				// first: even a budget at its maximum gets to see whether its last restart worked.
+				return Decision{Action: None, Next: cur, Reason: "restart backoff until " + cur.Restarts.NextAfter.UTC().Format(time.RFC3339)}
+			case cur.Restarts.Exhausted(now, d.restart.MaxRestarts, d.restart.Window):
+				cur.Phase, cur.Reason = state.Unrecoverable, "restart budget exhausted"
+				return Decision{Action: MarkUnrecoverable, Next: cur, Reason: cur.Reason}
+			default:
 				cur.Restarts = cur.Restarts.Consume(now, d.restart.Window, d.restart.BaseBackoff, d.restart.Multiplier)
 				cur.AwakeSince = now
 				cur.Reason = fmt.Sprintf("restart %d", cur.Restarts.Count)
 				return Decision{Action: Restart, Next: cur, Reason: fmt.Sprintf("job %s, restart %d", live.JobState, cur.Restarts.Count)}
 			}
-			cur.Phase, cur.Reason = state.Unrecoverable, "restart budget exhausted"
-			return Decision{Action: MarkUnrecoverable, Next: cur, Reason: cur.Reason}
 		}
 		if p.Mode == policy.ModeAuto &&
 			live.stable() && live.SpecJobState == "running" &&
@@ -161,8 +167,11 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, obs Obser
 					return Decision{Action: None, Next: cur, Reason: "lag unknown for group " + p.ConsumerGroup}
 				}
 				if obs.Pending > 0 {
-					return Decision{Action: None, Next: cur, Reason: fmt.Sprintf("%d records pending for group %s", obs.Pending, p.ConsumerGroup)}
+					// Coarse reason on the object; the number goes to the store.
+					cur.Pending = obs.Pending
+					return Decision{Action: None, Next: cur, Reason: "records pending for group " + p.ConsumerGroup}
 				}
+				cur.Pending = 0
 			}
 			cur.Phase, cur.SuspendedAt = state.Suspended, now
 			cur.Reason = "no input for " + p.IdleAfter.String()

@@ -89,8 +89,26 @@ func TestRestartBudgetThenUnrecoverable(t *testing.T) {
 		}
 		s, now = got.Next, got.Next.Restarts.NextAfter
 	}
+	// Right after the last allowed restart we are in backoff: still a wait, not exhaustion.
+	if got := d.Decide(auto, s, failed, seen(map[string]string{}), now.Add(-time.Second)); got.Action != None {
+		t.Fatalf("inside the last backoff we must still wait, got %s (%s)", got.Action, got.Reason)
+	}
 	if got := d.Decide(auto, s, failed, seen(map[string]string{}), now.Add(time.Second)); got.Action != MarkUnrecoverable {
 		t.Fatalf("want mark-unrecoverable, got %s", got.Action)
+	}
+}
+
+func TestBackoffIsAWaitNotExhaustion(t *testing.T) {
+	d := New(rp)
+	failed := Live{SpecJobState: "running", UpgradeMode: "savepoint", JobState: "FAILED", LifecycleState: "FAILED"}
+	first := d.Decide(auto, state.Initial(t0), failed, seen(map[string]string{}), t0)
+	if first.Action != Restart {
+		t.Fatalf("want restart, got %s", first.Action)
+	}
+	// The operator wakes us again a second later; the job still reads FAILED.
+	again := d.Decide(auto, first.Next, failed, seen(map[string]string{}), t0.Add(time.Second))
+	if again.Action != None || again.Next.Phase != state.Active {
+		t.Fatalf("inside the backoff we must wait, not give up: got %s (%s)", again.Action, again.Reason)
 	}
 }
 

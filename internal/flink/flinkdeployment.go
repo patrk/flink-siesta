@@ -23,7 +23,13 @@ func Live(u *unstructured.Unstructured) decide.Live {
 	}
 	jobState, _, _ := unstructured.NestedString(u.Object, "status", "jobStatus", "state")
 	lifecycle, _, _ := unstructured.NestedString(u.Object, "status", "lifecycleState")
+	// The operator reports reconciliation problems in status.reconciliationStatus.error and the
+	// job's own failure, as a serialized throwable, in status.error. Patterns match either.
 	recErr, _, _ := unstructured.NestedString(u.Object, "status", "reconciliationStatus", "error")
+	jobErr, _, _ := unstructured.NestedString(u.Object, "status", "error")
+	if jobErr != "" {
+		recErr = recErr + " " + jobErr
+	}
 	upgradeMode, _, _ := unstructured.NestedString(u.Object, "spec", "job", "upgradeMode")
 	if upgradeMode == "" {
 		upgradeMode = "stateless" // the CRD default

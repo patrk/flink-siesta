@@ -10,6 +10,7 @@ config:
     maxRestarts: 3
     window: 30m
     failingAfter: 10m
+    backoff: 1m
 
 kafka:
   bootstrapServers: ""

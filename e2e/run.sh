@@ -13,7 +13,7 @@ wait_for() { # $1 = jsonpath expr, $2 = expected, $3 = timeout s
     sleep 5; done; }
 
 echo "clean up any previous run"
-k -n $ns delete flinkdeployment example --ignore-not-found --wait=true
+k -n $ns delete flinkdeployment example failing --ignore-not-found --wait=true
 helm --kube-context "$ctx" uninstall siesta -n $ns 2>/dev/null || true
 
 k -n $ns apply -f "$here/storage.yaml" -f "$here/kafka.yaml"
@@ -26,16 +26,44 @@ wait_for '{.status.jobStatus.state}' RUNNING 300
 
 helm --kube-context "$ctx" upgrade --install siesta "$here/../helm/flink-siesta" -n $ns \
   --set image.repository="${IMAGE_REPO:-siesta}" --set image.tag="${IMAGE_TAG:-e2e}" \
-  --set kafka.bootstrapServers=kafka.$ns.svc:9092 --set replicaCount=1
+  --set kafka.bootstrapServers=kafka.$ns.svc:9092 --set replicaCount=1 \
+  --set config.restart.maxRestarts=2 --set config.restart.backoff=15s
 k -n $ns rollout status deploy/siesta --timeout=120s
 
 echo "expect suspend after idle-after (2m) + min-awake (30s)"
 wait_for '{.spec.job.state}' suspended 360
 wait_for '{.metadata.annotations.siesta\.flink\.io/state}' suspended 60
+wait_for '{.status.lifecycleState}' SUSPENDED 180
+sp=$(k -n $ns get flinkdeployment example -o jsonpath='{.status.jobStatus.upgradeSavepointPath}')
+[ -n "$sp" ] || { echo "operator recorded no savepoint on suspend"; exit 1; }
+echo "savepoint recorded: $sp"
 
 echo "produce one record, expect resume within ~1 min"
 k -n $ns exec deploy/kafka -- sh -c 'echo hello | /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server localhost:9092 --topic e2e-in'
 wait_for '{.spec.job.state}' running 120
 wait_for '{.status.jobStatus.state}' RUNNING 300
-k -n $ns get events --field-selector involvedObject.name=example,involvedObject.kind=FlinkDeployment -o custom-columns=TIME:.metadata.creationTimestamp,REASON:.reason,MESSAGE:.message | tail -6
+echo "expect the new JobManager to have restored from that savepoint"
+jm=$(k -n $ns get pods -l app=example,component=jobmanager -o jsonpath='{.items[0].metadata.name}')
+k -n $ns logs "$jm" | grep -i -E "restoring job .* from savepoint|restored from savepoint" | head -2 | grep -q . \
+  || { echo "JobManager log has no savepoint restore line"; k -n $ns logs "$jm" | grep -i savepoint | head; exit 1; }
+# Events outlive deleted objects by an hour; select by UID so earlier runs do not show up.
+uid=$(k -n $ns get flinkdeployment example -o jsonpath='{.metadata.uid}')
+k -n $ns get events --field-selector involvedObject.uid=$uid -o custom-columns=TIME:.metadata.creationTimestamp,REASON:.reason,MESSAGE:.message | grep -E "Suspended|Resumed" | tail -4
+
+echo "scenario 2: a job that fails terminally is restarted twice, then marked unrecoverable"
+k -n $ns apply -f "$here/failing.yaml"
+wait_on() { # like wait_for, for the failing deployment, substring match on annotation/field
+  local i=0; until k -n $ns get flinkdeployment failing -o jsonpath="$1" 2>/dev/null | grep -q "$2"; do
+    i=$((i+5)); [ $i -ge "$3" ] && { echo "timeout waiting for $1 ~ $2"; k -n $ns describe flinkdeployment failing | tail -20; exit 1; }
+    sleep 5; done; }
+# Intermediate states last seconds; assert the end state and the trail of events instead.
+wait_on '{.metadata.annotations.siesta\.flink\.io/state}' unrecoverable 600
+k -n $ns get configmap siesta-failing -o jsonpath='{.data.restarts}' | grep -q '"count":2' \
+  || { echo "expected the restart budget to be fully used"; exit 1; }
+uid=$(k -n $ns get flinkdeployment failing -o jsonpath='{.metadata.uid}')
+trail=$(k -n $ns get events --field-selector involvedObject.uid=$uid -o custom-columns=REASON:.reason,MESSAGE:.message | grep -E "^(Restarted|Unrecoverable)")
+echo "$trail"
+[ "$(echo "$trail" | grep -c '^Restarted')" = 2 ] || { echo "expected exactly two Restarted events"; exit 1; }
+echo "$trail" | grep -q '^Unrecoverable' || { echo "expected an Unrecoverable event"; exit 1; }
+k -n $ns delete flinkdeployment failing --wait=false
 echo "e2e OK"

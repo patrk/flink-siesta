@@ -11,12 +11,20 @@ type RestartBudget struct {
 	NextAfter   time.Time `json:"nextAfter,omitzero"`
 }
 
-func (b RestartBudget) Allows(now time.Time, limit int, window time.Duration) bool {
+// Exhausted: the budget for this window is used up. That is terminal; a human must look.
+func (b RestartBudget) Exhausted(now time.Time, limit int, window time.Duration) bool {
+	return b.rolled(now, window).Count >= limit
+}
+
+// InBackoff: a restart happened recently and the next one is not due yet. That is a wait.
+func (b RestartBudget) InBackoff(now time.Time, window time.Duration) bool {
 	b = b.rolled(now, window)
-	if b.Count >= limit {
-		return false
-	}
-	return b.NextAfter.IsZero() || !now.Before(b.NextAfter)
+	return !b.NextAfter.IsZero() && now.Before(b.NextAfter)
+}
+
+// Allows is Exhausted and InBackoff both false.
+func (b RestartBudget) Allows(now time.Time, limit int, window time.Duration) bool {
+	return !b.Exhausted(now, limit, window) && !b.InBackoff(now, window)
 }
 
 func (b RestartBudget) Consume(now time.Time, window, base time.Duration, multiplier float64) RestartBudget {

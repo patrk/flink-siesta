@@ -47,6 +47,15 @@ func (p patcher) refuse(ctx context.Context, fd *unstructured.Unstructured, s st
 	return err
 }
 
+// markUnrecoverable records the state and raises a Warning: this deployment needs a human.
+func (p patcher) markUnrecoverable(ctx context.Context, fd *unstructured.Unstructured, s state.State, reason string) error {
+	err := p.annotate(ctx, fd, s)
+	if p.Recorder != nil {
+		p.Recorder.Eventf(fd, nil, corev1.EventTypeWarning, "Unrecoverable", "MarkUnrecoverable", "%s", reason)
+	}
+	return err
+}
+
 func (p patcher) annotate(ctx context.Context, fd *unstructured.Unstructured, s state.State) error {
 	want := s.Annotations(p.Prefix)
 	have := fd.GetAnnotations()

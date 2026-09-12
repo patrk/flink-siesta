@@ -1,0 +1,37 @@
+# A job that fails deterministically: WordCount over a path that does not exist.
+# Used to observe how the operator reports a terminal failure and to prove the restart budget.
+apiVersion: flink.apache.org/v1beta1
+kind: FlinkDeployment
+metadata:
+  name: failing
+  namespace: default
+  annotations:
+    siesta.flink.io/mode: auto
+    siesta.flink.io/sources: e2e-in
+    siesta.flink.io/idle-after: 24h
+    siesta.flink.io/restart: auto
+spec:
+  image: flink:1.20
+  flinkVersion: v1_20
+  flinkConfiguration:
+    taskmanager.numberOfTaskSlots: "1"
+    restart-strategy.type: none
+    state.savepoints.dir: file:///flink-data/savepoints
+    state.checkpoints.dir: file:///flink-data/checkpoints
+  serviceAccount: flink
+  jobManager: { resource: { memory: "1024m", cpu: 0.5 } }
+  taskManager: { resource: { memory: "1024m", cpu: 0.5 } }
+  podTemplate:
+    spec:
+      containers:
+        - name: flink-main-container
+          volumeMounts: [{ mountPath: /flink-data, name: flink-data }]
+      volumes:
+        - name: flink-data
+          persistentVolumeClaim: { claimName: flink-data }
+  job:
+    jarURI: local:///opt/flink/examples/streaming/WordCount.jar
+    args: ["--input", "/does/not/exist"]
+    parallelism: 1
+    upgradeMode: savepoint
+    state: running

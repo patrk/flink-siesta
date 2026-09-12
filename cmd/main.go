@@ -19,6 +19,7 @@ import (
 	"github.com/patrk/flink-siesta/internal/controller"
 	"github.com/patrk/flink-siesta/internal/decide"
 	"github.com/patrk/flink-siesta/internal/probe"
+	"github.com/patrk/flink-siesta/internal/store"
 )
 
 // version is set at build time: -ldflags "-X main.version=v0.1.0".
@@ -38,17 +39,18 @@ func main() {
 // run holds every defer; main only translates its error into an exit code.
 func run() error {
 	var (
-		prefix        = flag.String("annotation-prefix", "siesta.flink.io", "annotation prefix for policy and state")
-		namespace     = flag.String("namespace", os.Getenv("POD_NAMESPACE"), "namespace to watch (empty = all)")
-		dryRun        = flag.Bool("dry-run", false, "record decisions in annotations but never patch spec")
-		brokers       = flag.String("kafka-bootstrap", "", "comma-separated Kafka bootstrap servers (overrides KAFKA_BOOTSTRAP_SERVERS)")
-		metricsAddr   = flag.String("metrics-bind-address", ":8080", "metrics endpoint")
-		probeAddr     = flag.String("health-probe-bind-address", ":8081", "health endpoint")
-		leaderElect   = flag.Bool("leader-elect", true, "enable leader election")
-		maxRestarts   = flag.Int("restart-max", 3, "restarts allowed per window")
-		restartWindow = flag.Duration("restart-window", 30*time.Minute, "restart budget window")
-		failingAfter  = flag.Duration("failing-after", 10*time.Minute, "RESTARTING longer than this counts as failing")
-		unrecoverable = flag.String("unrecoverable-patterns", "UnknownTopicOrPartition,does not exist,ImagePullBackOff,ErrImagePull",
+		prefix         = flag.String("annotation-prefix", "siesta.flink.io", "annotation prefix for policy and state")
+		namespace      = flag.String("namespace", os.Getenv("POD_NAMESPACE"), "namespace to watch (empty = all)")
+		dryRun         = flag.Bool("dry-run", false, "record decisions in annotations but never patch spec")
+		brokers        = flag.String("kafka-bootstrap", "", "comma-separated Kafka bootstrap servers (overrides KAFKA_BOOTSTRAP_SERVERS)")
+		metricsAddr    = flag.String("metrics-bind-address", ":8080", "metrics endpoint")
+		probeAddr      = flag.String("health-probe-bind-address", ":8081", "health endpoint")
+		leaderElect    = flag.Bool("leader-elect", true, "enable leader election")
+		maxRestarts    = flag.Int("restart-max", 3, "restarts allowed per window")
+		restartWindow  = flag.Duration("restart-window", 30*time.Minute, "restart budget window")
+		restartBackoff = flag.Duration("restart-backoff", time.Minute, "first restart backoff; doubles each time within the window")
+		failingAfter   = flag.Duration("failing-after", 10*time.Minute, "RESTARTING longer than this counts as failing")
+		unrecoverable  = flag.String("unrecoverable-patterns", "UnknownTopicOrPartition,does not exist,ImagePullBackOff,ErrImagePull",
 			"comma-separated substrings of status.reconciliationStatus.error that mean: never restart")
 	)
 	flag.Parse()
@@ -94,11 +96,12 @@ func run() error {
 		Probe:    kafkaProbe,
 		Lag:      kafkaProbe,
 		Recorder: mgr.GetEventRecorder("siesta"),
+		Store:    store.Store{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Prefix: *prefix},
 		Now:      time.Now,
 		Decider: decide.New(decide.RestartPolicy{
 			MaxRestarts:   *maxRestarts,
 			Window:        *restartWindow,
-			BaseBackoff:   time.Minute,
+			BaseBackoff:   *restartBackoff,
 			Multiplier:    2,
 			FailingAfter:  *failingAfter,
 			Unrecoverable: strings.Split(*unrecoverable, ","),
