@@ -14,10 +14,19 @@ config:
 kafka:
   bootstrapServers: ""
   securityProtocol: PLAINTEXT
-  # Name of an existing Secret with keys: sasl-mechanism, sasl-jaas-config
-  existingSecret: ""
+  sasl:
+    mechanism: PLAIN
+    existingSecret: ""
+    usernameKey: username
+    passwordKey: password
+  tls:
+    existingSecret: ""
+    caKey: ca.crt
+    clientCert: false
+    certKey: tls.crt
+    keyKey: tls.key
+    insecureSkipVerify: false
 
-# Namespaced by default. The controller watches only its own namespace.
 rbac:
   create: true
 

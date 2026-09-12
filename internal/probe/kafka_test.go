@@ -35,7 +35,8 @@ func TestKafkaEndOffsets(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cl, err := kgo.NewClient(kgo.SeedBrokers(brokers...))
+	// ManualPartitioner makes franz-go honour Record.Partition; the default partitioner ignores it.
+	cl, err := kgo.NewClient(kgo.SeedBrokers(brokers...), kgo.RecordPartitioner(kgo.ManualPartitioner()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +45,7 @@ func TestKafkaEndOffsets(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	p, err := NewKafka(brokers)
+	p, err := NewKafka(kgo.SeedBrokers(brokers...))
 	if err != nil {
 		t.Fatal(err)
 	}

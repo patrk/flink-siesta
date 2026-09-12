@@ -41,7 +41,7 @@ func run() error {
 		prefix        = flag.String("annotation-prefix", "siesta.flink.io", "annotation prefix for policy and state")
 		namespace     = flag.String("namespace", os.Getenv("POD_NAMESPACE"), "namespace to watch (empty = all)")
 		dryRun        = flag.Bool("dry-run", false, "record decisions in annotations but never patch spec")
-		brokers       = flag.String("kafka-bootstrap", os.Getenv("KAFKA_BOOTSTRAP_SERVERS"), "comma-separated Kafka bootstrap servers")
+		brokers       = flag.String("kafka-bootstrap", "", "comma-separated Kafka bootstrap servers (overrides KAFKA_BOOTSTRAP_SERVERS)")
 		metricsAddr   = flag.String("metrics-bind-address", ":8080", "metrics endpoint")
 		probeAddr     = flag.String("health-probe-bind-address", ":8081", "health endpoint")
 		leaderElect   = flag.Bool("leader-elect", true, "enable leader election")
@@ -73,7 +73,15 @@ func run() error {
 		return fmt.Errorf("manager: %w", err)
 	}
 
-	kafkaProbe, err := probe.NewKafka(strings.Split(*brokers, ","))
+	kafkaCfg := probe.KafkaConfigFromEnv()
+	if *brokers != "" {
+		kafkaCfg.BootstrapServers = strings.Split(*brokers, ",")
+	}
+	kafkaOpts, err := kafkaCfg.Opts()
+	if err != nil {
+		return err
+	}
+	kafkaProbe, err := probe.NewKafka(kafkaOpts...)
 	if err != nil {
 		return fmt.Errorf("kafka probe: %w", err)
 	}

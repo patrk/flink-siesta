@@ -16,8 +16,9 @@ type Kafka struct {
 	adm *kadm.Client
 }
 
-func NewKafka(brokers []string, opts ...kgo.Opt) (*Kafka, error) {
-	cl, err := kgo.NewClient(append([]kgo.Opt{kgo.SeedBrokers(brokers...)}, opts...)...)
+// NewKafka takes ready-made client options; KafkaConfig.Opts builds them from configuration.
+func NewKafka(opts ...kgo.Opt) (*Kafka, error) {
+	cl, err := kgo.NewClient(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("kafka client: %w", err)
 	}

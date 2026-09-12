@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/logo.png" alt="Flink Siesta: a dormice asleep around a pause button" width="180"></p>
+
 # Flink Siesta
 
 A Flink idle suspender. Focused on Kafka sources today, but other sources may follow behind the same interface.
@@ -42,6 +44,31 @@ Prefix is configurable (`siesta.annotation-prefix`, default `siesta.flink.io`).
 | `<prefix>/restarts` | controller | JSON `{count, windowStart, nextAfter}` |
 | `<prefix>/reason` | controller | last transition reason |
 
+## Connecting to Kafka
+
+The controller speaks Kafka's own vocabulary. Set these values (or the matching `KAFKA_*`
+environment variables when running the binary directly):
+
+| Setup | `securityProtocol` | `sasl.mechanism` | credentials |
+|---|---|---|---|
+| Local or in-cluster broker without auth | `PLAINTEXT` | | none |
+| Confluent Cloud | `SASL_SSL` | `PLAIN` | API key as username, API secret as password |
+| SCRAM-secured cluster | `SASL_SSL` | `SCRAM-SHA-256` or `SCRAM-SHA-512` | username and password |
+| mTLS | `SSL` | | client certificate and key in a Secret, `tls.clientCert: true` |
+
+Credentials come from Secrets you create; the chart never renders them into values:
+
+    kubectl create secret generic kafka-auth --from-literal=username=APIKEY --from-literal=password=SECRET
+    helm install siesta ./helm/flink-siesta \
+      --set kafka.bootstrapServers=pkc-xxxxx.eu-central-1.aws.confluent.cloud:9092 \
+      --set kafka.securityProtocol=SASL_SSL \
+      --set kafka.sasl.existingSecret=kafka-auth
+
+A private CA goes in a Secret referenced by `kafka.tls.existingSecret` under key `ca.crt`.
+The credential needs DESCRIBE on the topics you annotate (Confluent RBAC: DeveloperRead on
+the topic or prefix). One controller instance talks to one Kafka cluster; run one instance
+per namespace and cluster.
+
 ## Requirements
 
 - Flink Kubernetes Operator 1.10+ (uses `spec.job.state`, `upgradeMode: savepoint`,
@@ -65,6 +92,11 @@ handled as an unstructured object: the CRD is external and only six fields are r
 ## Status
 
 Initial development. Contract may change until first release version 0.1.0.
+
+## Logo
+
+The mascots are *Siebenschläfer*, edible dormice: Berlin neighbours of Flink's squirrel that sleep
+seven months a year. AI-generated original artwork; not affiliated with the Apache Flink logo.
 
 ## License
 

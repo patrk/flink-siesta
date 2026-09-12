@@ -44,6 +44,30 @@ spec:
               valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
             - name: KAFKA_BOOTSTRAP_SERVERS
               value: {{ .Values.kafka.bootstrapServers | quote }}
+            - name: KAFKA_SECURITY_PROTOCOL
+              value: {{ .Values.kafka.securityProtocol | quote }}
+            {{- if .Values.kafka.sasl.existingSecret }}
+            - name: KAFKA_SASL_MECHANISM
+              value: {{ .Values.kafka.sasl.mechanism | quote }}
+            - name: KAFKA_SASL_USERNAME
+              valueFrom: { secretKeyRef: { name: {{ .Values.kafka.sasl.existingSecret }}, key: {{ .Values.kafka.sasl.usernameKey }} } }
+            - name: KAFKA_SASL_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ .Values.kafka.sasl.existingSecret }}, key: {{ .Values.kafka.sasl.passwordKey }} } }
+            {{- end }}
+            {{- if .Values.kafka.tls.existingSecret }}
+            - name: KAFKA_TLS_CA_FILE
+              value: /etc/siesta/kafka-tls/{{ .Values.kafka.tls.caKey }}
+            {{- if .Values.kafka.tls.clientCert }}
+            - name: KAFKA_TLS_CERT_FILE
+              value: /etc/siesta/kafka-tls/{{ .Values.kafka.tls.certKey }}
+            - name: KAFKA_TLS_KEY_FILE
+              value: /etc/siesta/kafka-tls/{{ .Values.kafka.tls.keyKey }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.kafka.tls.insecureSkipVerify }}
+            - name: KAFKA_TLS_INSECURE_SKIP_VERIFY
+              value: "true"
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{ toYaml . | nindent 12 }}
             {{- end }}
@@ -54,6 +78,13 @@ spec:
           readinessProbe: { httpGet: { path: /readyz, port: health } }
           securityContext: {{ toYaml .Values.securityContext | nindent 12 }}
           resources: {{ toYaml .Values.resources | nindent 12 }}
+          {{- if .Values.kafka.tls.existingSecret }}
+          volumeMounts:
+            - { name: kafka-tls, mountPath: /etc/siesta/kafka-tls, readOnly: true }
+      volumes:
+        - name: kafka-tls
+          secret: { secretName: {{ .Values.kafka.tls.existingSecret }} }
+          {{- end }}
 {{- range .Values.extraObjects }}
 ---
 {{ toYaml . }}
