@@ -2,11 +2,19 @@
 
 # Flink Siesta
 
-A Flink idle suspender. Focused on Kafka sources today, but other sources may follow behind the same interface.
+A Kubernetes controller that suspends idle Flink jobs and resumes them when data arrives. Focused on Kafka sources today, but other sources may follow behind the same interface.
 
-Siesta suspends a FlinkDeployment when its Kafka input stops and brings it back on the first new record. It does this through the Flink Kubernetes Operator's own `spec.job.state`, so the operator takes the savepoint, tears the job down, and restores it later. Siesta only decides when. It also restarts failing jobs within a persisted budget.
+The Flink Kubernetes Operator can suspend a running job and later restore it from its savepoint. You do that by setting `spec.job.state` to `suspended` and back to `running` on the FlinkDeployment, as described in the operator's [job management documentation](https://nightlies.apache.org/flink/flink-kubernetes-operator-docs-main/docs/custom-resource/job-management/). It is a manual step. The operator has no notion of "this job has had no input for two weeks", and its autoscaler never goes below one running JobManager.
+
+Siesta automates that step. It watches the Kafka topics a job consumes, sets `spec.job.state: suspended` once nothing has arrived for a configured idle window, and sets it back to `running` on the first new record. The operator does the actual work, the savepoint, the teardown and the restore. Siesta only decides when. It also restarts failing jobs within a persisted budget.
 
 It works with any application-mode `FlinkDeployment`. The core only needs one thing from a source: a snapshot that changes when new input exists. Kafka end offsets ship first. Other probes, for Pulsar, Kinesis or object-store prefixes, plug in behind the same interface. There is no CRD, no database and no metrics pipeline in the control path.
+
+## Alternatives
+
+The operator's own [autoscaler](https://nightlies.apache.org/flink/flink-kubernetes-operator-docs-main/docs/custom-resource/autoscaler/) right-sizes a running job by vertex, and KEDA with the Kafka scaler can scale the TaskManagers of a job in [reactive mode](https://nightlies.apache.org/flink/flink-docs-stable/docs/deployment/elastic_scaling/) by consumer lag. Both answer "how big should this job be while it runs". Neither reaches zero: the autoscaler keeps at least one running JobManager, and a reactive-mode job with no TaskManagers fails rather than pausing. KEDA cannot drive a FlinkDeployment directly either, because it thinks in replicas through the `/scale` subresource and a suspend is a savepoint followed by a teardown.
+
+Siesta answers the other question, "should this job be running at all", and composes with both: a job can be autoscaled while awake and suspended while idle.
 
 ## Who it is for
 

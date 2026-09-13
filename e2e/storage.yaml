@@ -4,3 +4,12 @@ metadata: { name: flink-data, namespace: default }
 spec:
   accessModes: [ReadWriteOnce]
   resources: { requests: { storage: 1Gi } }
+---
+# Kafka's log directory. With it a broker restart keeps its topics, which is what a real outage
+# looks like; without it the e2e could not tell an outage from a deleted topic.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: kafka-data, namespace: default }
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: { requests: { storage: 1Gi } }

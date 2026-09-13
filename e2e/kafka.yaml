@@ -19,6 +19,12 @@ spec:
             - { name: KAFKA_ADVERTISED_LISTENERS, value: "PLAINTEXT://kafka.default.svc:9092" }
             - { name: KAFKA_CONTROLLER_LISTENER_NAMES, value: "CONTROLLER" }
             - { name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR, value: "1" }
+            - { name: KAFKA_LOG_DIRS, value: "/var/lib/kafka/data" }
+            - { name: CLUSTER_ID, value: "MkU3OEVBNTcwNTJENDM2Qk" }
+          volumeMounts: [{ name: data, mountPath: /var/lib/kafka/data }]
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: kafka-data }
 ---
 apiVersion: v1
 kind: Service

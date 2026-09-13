@@ -22,7 +22,8 @@ events() { local uid; uid=$(k -n $ns get flinkdeployment example -o jsonpath='{.
 echo "clean up"
 k -n $ns delete flinkdeployment example --ignore-not-found --wait=true
 helm --kube-context "$ctx" uninstall siesta -n $ns 2>/dev/null || true
-k -n $ns delete pvc flink-data --ignore-not-found --wait=true
+k -n $ns delete deploy kafka --ignore-not-found --wait=true
+k -n $ns delete pvc flink-data kafka-data --ignore-not-found --wait=true
 k -n $ns apply -f "$here/storage.yaml" -f "$here/kafka.yaml"
 k -n $ns rollout status deploy/kafka --timeout=120s
 until k -n $ns exec deploy/kafka -- /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1; do sleep 2; done
