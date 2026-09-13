@@ -1,6 +1,7 @@
 FLINK_OPERATOR_VERSION ?= 1.15.0
 FLINK_VERSION ?= 2.2
 ENVTEST_K8S_VERSION ?= 1.34.0
+SOAK_TIMEOUT ?= 30m
 IMAGE ?= siesta:e2e
 KUBE_CONTEXT ?= kind-siesta
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -26,7 +27,7 @@ envtest:
 	KUBEBUILDER_ASSETS=$$(cat .envtest-path) go test ./internal/controller/
 
 soak:
-	KUBEBUILDER_ASSETS=$$(cat .envtest-path) go test -tags soak -run TestSoak -v -timeout 30m ./internal/controller/
+	KUBEBUILDER_ASSETS=$$(cat .envtest-path) go test -tags soak -run TestSoak -v -timeout $(SOAK_TIMEOUT) ./internal/controller/
 
 bench:
 	KUBEBUILDER_ASSETS=$$(cat .envtest-path) go test -run '^$$' -bench Reconcile -benchmem -benchtime 300x ./internal/controller/
