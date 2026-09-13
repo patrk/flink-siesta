@@ -17,7 +17,7 @@ render() {
 }
 wait_for() { local i=0; until [ "$(k -n $ns get flinkdeployment example -o jsonpath="$1" 2>/dev/null)" = "$2" ]; do
   i=$((i+5)); [ $i -ge "$3" ] && { echo "timeout waiting for $1 = $2"; k -n $ns describe flinkdeployment example | tail -20; exit 1; }; sleep 5; done; }
-events() { local uid; uid=$(k -n $ns get flinkdeployment example -o jsonpath='{.metadata.uid}'); k -n $ns get events --field-selector involvedObject.uid=$uid -o custom-columns=REASON:.reason,MESSAGE:.message; }
+events() { local uid; uid=$(k -n $ns get flinkdeployment example -o jsonpath='{.metadata.uid}'); k -n $ns get events --field-selector involvedObject.uid=$uid --sort-by=.metadata.creationTimestamp -o custom-columns=REASON:.reason,MESSAGE:.message; }
 
 echo "clean up"
 k -n $ns delete flinkdeployment example --ignore-not-found --wait=true
@@ -44,7 +44,9 @@ wait_for '{.status.lifecycleState}' SUSPENDED 180
 k -n $ns exec deploy/kafka -- sh -c 'echo hello | /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server localhost:9092 --topic e2e-in'
 wait_for '{.spec.job.state}' running 180
 wait_for '{.status.jobStatus.state}' RUNNING 300
-[ "$(events | grep -c '^Suspended')" = 1 ] && [ "$(events | grep -c '^Resumed')" = 1 ] \
+# Count our own events only: the operator emits "Suspended" too, with a different message.
+ours() { events | grep -cE "^$1 +(no input|input observed|job FAILED)"; }
+[ "$(ours Suspended)" = 1 ] && [ "$(ours Resumed)" = 1 ] \
   || { echo "failover must not double-act:"; events | grep -E '^(Suspended|Resumed)'; exit 1; }
 
 echo "chaos 2: the operator is away when we suspend; nothing must happen twice"
@@ -57,6 +59,6 @@ sleep 120                                       # we must sit still while nothin
 k scale deploy/flink-kubernetes-operator --replicas=1
 k rollout status deploy/flink-kubernetes-operator --timeout=180s
 wait_for '{.status.lifecycleState}' SUSPENDED 300
-[ "$(events | grep -c '^Suspended')" = 2 ] || { echo "exactly one more Suspended expected:"; events | grep '^Suspended'; exit 1; }
+[ "$(ours Suspended)" = 2 ] || { echo "exactly one more Suspended expected:"; events | grep '^Suspended'; exit 1; }
 k -n $ns delete flinkdeployment example --wait=false
 echo "chaos OK"
