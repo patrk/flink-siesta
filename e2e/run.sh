@@ -76,7 +76,13 @@ k -n $ns logs "$jm" | grep -i -E "restoring job .* from savepoint|restored from 
   || { echo "JobManager log has no savepoint restore line"; k -n $ns logs "$jm" | grep -i savepoint | head; exit 1; }
 # Events outlive deleted objects by an hour; select by UID so earlier runs do not show up.
 uid=$(k -n $ns get flinkdeployment example -o jsonpath='{.metadata.uid}')
-events() { k -n $ns get events --field-selector involvedObject.uid=$uid -o custom-columns=REASON:.reason,MESSAGE:.message; }
+events() { k -n $ns get events --field-selector involvedObject.uid=$uid --sort-by=.metadata.creationTimestamp -o custom-columns=REASON:.reason,MESSAGE:.message; }
+# transitions_while_unknown N: transitions between the Nth SourceUnreachable and the Nth SourceReachable
+transitions_while_unknown() { events | awk -v n="$1" '
+  /^SourceUnreachable/ {u++; if (u==n) inside=1; next}
+  /^SourceReachable/   {r++; if (r==n) inside=0; next}
+  inside && /^(Suspended|Resumed|Restarted)/ {c++}
+  END {print c+0}'; }
 events | grep -E "Suspended|Resumed" | tail -4
 
 echo "take Kafka away: one SourceUnreachable, no transitions; bring it back: one SourceReachable"
@@ -86,14 +92,14 @@ k -n $ns scale deploy/kafka --replicas=1
 k -n $ns rollout status deploy/kafka --timeout=120s
 i=0; until events | grep -q '^SourceReachable'; do i=$((i+5)); [ $i -ge 180 ] && { echo "no SourceReachable event after the broker returned"; exit 1; }; sleep 5; done
 [ "$(events | grep -c '^SourceUnreachable')" = 1 ] || { echo "SourceUnreachable must be reported once, not per tick"; exit 1; }
-[ "$(k -n $ns get flinkdeployment example -o jsonpath='{.spec.job.state}')" = running ] || { echo "an outage must not change the job"; exit 1; }
+[ "$(transitions_while_unknown 1)" = 0 ] || { echo "nothing may change while the source is unknown:"; events | grep -E "^(Source|Suspended|Resumed|Restarted)"; exit 1; }
 
 echo "delete the topic: unknown again, the job is left alone; recreate it: reachable again"
 k -n $ns exec deploy/kafka -- /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --delete --topic e2e-in
 i=0; until [ "$(events | grep -c '^SourceUnreachable')" = 2 ]; do i=$((i+5)); [ $i -ge 180 ] && { echo "a deleted topic must be reported unreachable"; exit 1; }; sleep 5; done
-[ "$(k -n $ns get flinkdeployment example -o jsonpath='{.spec.job.state}')" = running ] || { echo "a deleted topic must not change the job"; exit 1; }
 k -n $ns exec deploy/kafka -- /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --if-not-exists --topic e2e-in --partitions 1
 i=0; until [ "$(events | grep -c '^SourceReachable')" = 2 ]; do i=$((i+5)); [ $i -ge 180 ] && { echo "a recreated topic must be reported reachable"; exit 1; }; sleep 5; done
+[ "$(transitions_while_unknown 2)" = 0 ] || { echo "nothing may change while the topic is missing:"; events | grep -E "^(Source|Suspended|Resumed|Restarted)"; exit 1; }
 
 echo "admission policy: the controller's identity may not change the image, but may change job.state"
 sa="system:serviceaccount:$ns:siesta"
