@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -37,12 +38,30 @@ func (k *Kafka) Observe(ctx context.Context, topics []string) (map[string]string
 		log.Info("end offsets unavailable", "topics", topics, "err", err.Error())
 		return nil, false
 	}
-	out := make(map[string]string)
+	// One entry per topic, end offsets joined in partition order: "topic" -> "8812,8790,9001".
+	// Ten thousand partitions fit comfortably in a ConfigMap this way; per-partition keys would not.
+	perTopic := map[string][]int64{}
 	ends.Each(func(o kadm.ListedOffset) {
-		out[fmt.Sprintf("%s-%d", o.Topic, o.Partition)] = strconv.FormatInt(o.Offset, 10)
+		parts := perTopic[o.Topic]
+		for int32(len(parts)) <= o.Partition {
+			parts = append(parts, -1)
+		}
+		parts[o.Partition] = o.Offset
+		perTopic[o.Topic] = parts
 	})
-	if len(out) == 0 {
+	if len(perTopic) == 0 {
 		return nil, false
+	}
+	out := make(map[string]string, len(perTopic))
+	for topic, parts := range perTopic {
+		var b strings.Builder
+		for i, off := range parts {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(strconv.FormatInt(off, 10))
+		}
+		out[topic] = b.String()
 	}
 	return out, true
 }

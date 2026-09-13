@@ -1,4 +1,4 @@
-{{- if .Values.admissionPolicy.enabled }}
+{{- if and .Values.admissionPolicy.enabled (.Capabilities.APIVersions.Has "admissionregistration.k8s.io/v1/ValidatingAdmissionPolicy") }}
 # Pins what the controller's ServiceAccount may change on a FlinkDeployment. RBAC cannot
 # limit a patch to fields; this can. Everything else in spec must be unchanged by its writes.
 apiVersion: admissionregistration.k8s.io/v1

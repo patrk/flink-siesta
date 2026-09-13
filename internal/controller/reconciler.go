@@ -40,8 +40,9 @@ type Reconciler struct {
 	Store    store.Store
 	// PollInterval is how often each deployment is revisited; ProbeTimeout bounds one source call
 	// so a hung broker degrades to "unknown" for one deployment instead of freezing the worker.
-	PollInterval time.Duration
-	ProbeTimeout time.Duration
+	PollInterval     time.Duration
+	ProbeTimeout     time.Duration
+	ResumeStallAfter time.Duration // warn once if a resumed job is not RUNNING after this
 }
 
 func (r *Reconciler) requeue() time.Duration {
@@ -49,6 +50,13 @@ func (r *Reconciler) requeue() time.Duration {
 		return r.PollInterval
 	}
 	return defaultPollInterval
+}
+
+func (r *Reconciler) stallAfter() time.Duration {
+	if r.ResumeStallAfter > 0 {
+		return r.ResumeStallAfter
+	}
+	return 10 * time.Minute
 }
 
 func (r *Reconciler) probeTimeout() time.Duration {
@@ -92,6 +100,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if !seen {
 		prev = state.Initial(now)
 	}
+	prev = repair(prev, ann[r.Prefix+"/state"], now)
 	if len(pol.Problems) > 0 {
 		// Ours, but not usable. Say why, once, and do nothing until the annotations are fixed.
 		reason := "invalid policy: " + strings.Join(pol.Problems, "; ")
@@ -149,6 +158,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		d.Next.SuspendChecked = false
 	}
 
+	// A resume that has not produced a RUNNING job within the stall window is worth a warning:
+	// a full cluster, an image that no longer pulls, a savepoint that no longer restores.
+	if !d.Next.ResumedAt.IsZero() && !d.Next.ResumeStalledReported && now.Sub(d.Next.ResumedAt) > r.stallAfter() {
+		d.Next.ResumeStalledReported = true
+		r.event(fd, corev1.EventTypeWarning, "ResumeStalled", "Resume", "job not RUNNING "+r.stallAfter().String()+" after resume; check pods, image and savepoint")
+	}
+	if d.Next.ResumedAt.IsZero() {
+		d.Next.ResumeStalledReported = false
+	}
+
 	if r.DryRun && d.Action != decide.None {
 		d = shadow(prev, d)
 	}
@@ -160,11 +179,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		metrics.ResumeLatency.Observe(d.ResumedAfter.Seconds())
 	}
 
-	// The controller's memory goes to its own ConfigMap every tick: cheap, and nobody watches it.
-	// The deployment itself is touched only when something a human would want to see changed.
-	if err := r.Store.Save(ctx, fd, d.Next); err != nil {
-		return ctrl.Result{}, err
-	}
+	// Order matters: the object first (spec and state annotation in one patch), memory second.
+	// If the second write fails, the next tick repairs memory from the object's annotation.
 	humanVisible := !seen || d.Action != decide.None || prev.Phase != d.Next.Phase || prev.Reason != d.Next.Reason
 	p := patcher{Client: r.Client, Prefix: r.Prefix, Recorder: r.Recorder}
 	switch {
@@ -186,7 +202,24 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err != nil {
 		return ctrl.Result{}, err // controller-runtime retries with backoff
 	}
+	if err := r.Store.Save(ctx, fd, d.Next); err != nil {
+		return ctrl.Result{}, err
+	}
 	return ctrl.Result{RequeueAfter: r.requeue()}, nil
+}
+
+// repair reconciles memory with what the object itself says. The state annotation is written
+// in the same patch as spec.job.state, so if the two stores disagree, the object is the truth:
+// a suspend or resume whose memory write failed is recovered instead of being mistaken for a
+// manual change.
+func repair(prev state.State, objectState string, now time.Time) state.State {
+	switch {
+	case objectState == string(state.Suspended) && prev.Phase == state.Active:
+		prev.Phase, prev.SuspendedAt, prev.Reason = state.Suspended, now, "memory repaired from object"
+	case objectState == string(state.Active) && prev.Phase == state.Suspended:
+		prev.Phase, prev.SuspendedAt, prev.AwakeSince, prev.ResumedAt, prev.Reason = state.Active, time.Time{}, now, now, "memory repaired from object"
+	}
+	return prev
 }
 
 func (r *Reconciler) event(fd *unstructured.Unstructured, kind, reason, action, note string) {

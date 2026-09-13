@@ -5,7 +5,7 @@ IMAGE ?= siesta:e2e
 KUBE_CONTEXT ?= kind-siesta
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-.PHONY: deps build test it envtest bench lint image kind-up kind-deps kind-down e2e
+.PHONY: deps build test it envtest bench soak lint image kind-up kind-deps kind-down e2e e2e-chaos e2e-soak
 
 deps:
 	go get sigs.k8s.io/controller-runtime@latest k8s.io/apimachinery@latest k8s.io/client-go@latest \
@@ -24,6 +24,9 @@ envtest:
 	  https://raw.githubusercontent.com/apache/flink-kubernetes-operator/release-$(FLINK_OPERATOR_VERSION)/helm/flink-kubernetes-operator/crds/flinkdeployments.flink.apache.org-v1.yml
 	go run sigs.k8s.io/controller-runtime/tools/setup-envtest@latest use $(ENVTEST_K8S_VERSION) -p path > .envtest-path
 	KUBEBUILDER_ASSETS=$$(cat .envtest-path) go test ./internal/controller/
+
+soak:
+	KUBEBUILDER_ASSETS=$$(cat .envtest-path) go test -tags soak -run TestSoak -v -timeout 30m ./internal/controller/
 
 bench:
 	KUBEBUILDER_ASSETS=$$(cat .envtest-path) go test -run '^$$' -bench Reconcile -benchmem -benchtime 300x ./internal/controller/
@@ -44,3 +47,11 @@ e2e: image
 	IMAGE_REPO=siesta IMAGE_TAG=e2e KUBE_CONTEXT=$(KUBE_CONTEXT) FLINK_VERSION=$(FLINK_VERSION) bash e2e/run.sh
 
 kind-down: ; kind delete cluster --name siesta
+
+e2e-chaos: image
+	kind load docker-image $(IMAGE) --name siesta
+	IMAGE_REPO=siesta IMAGE_TAG=e2e KUBE_CONTEXT=$(KUBE_CONTEXT) FLINK_VERSION=$(FLINK_VERSION) bash e2e/chaos.sh
+
+e2e-soak: image
+	kind load docker-image $(IMAGE) --name siesta
+	IMAGE_REPO=siesta IMAGE_TAG=e2e KUBE_CONTEXT=$(KUBE_CONTEXT) FLINK_VERSION=$(FLINK_VERSION) bash e2e/soak.sh

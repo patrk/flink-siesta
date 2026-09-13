@@ -86,14 +86,14 @@ func TestKafkaProbeWithSASLAndTLS(t *testing.T) {
 	}
 	defer p.Close()
 	before, ok := p.Observe(ctx, []string{"secure"})
-	if !ok || before["secure-0"] != "0" {
+	if !ok || before["secure"] != "0" {
 		t.Fatalf("authenticated probe must see the fresh topic, got %v ok=%v", before, ok)
 	}
 	if err := cl.ProduceSync(ctx, &kgo.Record{Topic: "secure", Partition: 0, Value: []byte("v")}).FirstErr(); err != nil {
 		t.Fatal(err)
 	}
-	if after, ok := p.Observe(ctx, []string{"secure"}); !ok || after["secure-0"] != "1" {
-		t.Fatalf("want secure-0 at 1, got %v ok=%v", after, ok)
+	if after, ok := p.Observe(ctx, []string{"secure"}); !ok || after["secure"] != "1" {
+		t.Fatalf("want secure at 1, got %v ok=%v", after, ok)
 	}
 
 	// Wrong password must be unknown, never zero.

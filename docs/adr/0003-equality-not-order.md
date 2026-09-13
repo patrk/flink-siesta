@@ -6,8 +6,8 @@ numerically ("the offset grew") is the obvious implementation. Other sources ans
 values that are not numbers (Kinesis sequence numbers, Pulsar message ids, object-store
 keys), so a numeric comparison would not generalise.
 
-**Decision.** A probe returns one opaque text position per source unit (for Kafka, per
-partition). The decider compares the whole map with the previous one: different means
+**Decision.** A probe returns one opaque text position per source (for Kafka, per topic: the end
+offsets of its partitions joined in order). The decider compares the whole map with the previous one: different means
 something arrived. It never parses the values.
 
 "I could not ask" (broker down, topic gone) is a third answer, distinct from "unchanged".

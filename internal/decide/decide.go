@@ -130,7 +130,12 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, obs Obser
 		return Decision{Action: None, Next: cur, Reason: "idle"}
 
 	case state.Unrecoverable:
-		return Decision{Action: None, Next: cur, Reason: prev.Reason}
+		reason := prev.Reason
+		if reason == "" {
+			reason = "unrecoverable; edit the spec to retry"
+		}
+		cur.Reason = reason
+		return Decision{Action: None, Next: cur, Reason: reason}
 
 	default: // Active
 		if live.SpecJobState == "suspended" {

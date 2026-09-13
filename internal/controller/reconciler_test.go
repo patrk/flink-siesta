@@ -2,10 +2,13 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
@@ -189,4 +192,63 @@ func TestStatelessUpgradeModeIsRefusedOnTheServer(t *testing.T) {
 	if reason := fd.GetAnnotations()["siesta.flink.io/reason"]; !strings.Contains(reason, "refused") {
 		t.Fatalf("the object must say why, got %q", reason)
 	}
+}
+
+// failOnce fails the next ConfigMap patch, then behaves.
+type failOnce struct {
+	client.Client
+	armed bool
+}
+
+func (f *failOnce) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+	if f.armed {
+		if _, isCM := obj.(*corev1.ConfigMap); isCM {
+			f.armed = false
+			return errors.New("injected: API server dropped the write")
+		}
+	}
+	return f.Client.Patch(ctx, obj, patch, opts...)
+}
+
+func TestMemoryIsRepairedFromTheObjectAfterAPartialWrite(t *testing.T) {
+	c := startEnv(t)
+	ctx := context.Background()
+	createDeployment(t, c, "partial", "savepoint")
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	offsets := map[string]string{"in-0": "5"}
+	fc := &failOnce{Client: c}
+	r := newReconciler(c, &now, probe.Func(func(context.Context, []string) (map[string]string, bool) { return offsets, true }))
+	r.Store = store.Store{Client: fc, Reader: c, Prefix: "siesta.flink.io"}
+	key := types.NamespacedName{Name: "partial", Namespace: "default"}
+	req := reconcileRequest(key)
+
+	if _, err := r.Reconcile(ctx, req); err != nil { // first observation, creates the ConfigMap
+		t.Fatal(err)
+	}
+	now = now.Add(2 * time.Hour)
+	fc.armed = true
+	if _, err := r.Reconcile(ctx, req); err == nil { // suspend: object patched, memory write fails
+		t.Fatal("the failed memory write must surface as an error")
+	}
+	if got := specJobState(t, c, key); got != "suspended" {
+		t.Fatalf("the object must already say suspended, got %q", got)
+	}
+	// Next tick: memory still says active, object says suspended. Must NOT be read as a manual suspend.
+	now = now.Add(time.Minute)
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	st, ok, err := r.Store.Load(ctx, mustGet(t, c, key))
+	if err != nil || !ok || st.Phase != state.Suspended || st.Reason != "memory repaired from object" {
+		t.Fatalf("memory must be repaired to suspended, got ok=%v err=%v %+v", ok, err, st)
+	}
+}
+
+func mustGet(t *testing.T, c client.Client, key types.NamespacedName) *unstructured.Unstructured {
+	t.Helper()
+	fd := flink.New()
+	if err := c.Get(context.Background(), key, fd); err != nil {
+		t.Fatal(err)
+	}
+	return fd
 }

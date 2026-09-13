@@ -52,15 +52,15 @@ func TestKafkaEndOffsets(t *testing.T) {
 	defer p.Close()
 
 	before, ok := p.Observe(ctx, []string{"in"})
-	if !ok || before["in-0"] != "0" || before["in-1"] != "0" {
-		t.Fatalf("want fresh topic at 0, got %v ok=%v", before, ok)
+	if !ok || before["in"] != "0,0" {
+		t.Fatalf("want fresh two-partition topic at 0,0, got %v ok=%v", before, ok)
 	}
 	if err := cl.ProduceSync(ctx, &kgo.Record{Topic: "in", Partition: 0, Value: []byte("v")}).FirstErr(); err != nil {
 		t.Fatal(err)
 	}
 	after, ok := p.Observe(ctx, []string{"in"})
-	if !ok || after["in-0"] != "1" {
-		t.Fatalf("want in-0 at 1 after one record, got %v", after)
+	if !ok || after["in"] != "1,0" {
+		t.Fatalf("want partition 0 at 1 after one record, got %v", after)
 	}
 	if _, ok := p.Observe(ctx, []string{"nope"}); ok {
 		t.Fatal("missing topic must be unknown, not zero")

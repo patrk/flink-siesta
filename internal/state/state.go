@@ -16,18 +16,19 @@ const (
 )
 
 type State struct {
-	Phase          Phase
-	Snapshot       map[string]string
-	LastActivityAt time.Time
-	SuspendedAt    time.Time
-	AwakeSince     time.Time
-	Restarts       RestartBudget
-	Reason         string
-	Generation     int64     // metadata.generation last seen; a newer one clears unrecoverable
-	ResumedAt      time.Time // set when we resume; cleared, and the latency reported, once the job is RUNNING
-	Pending        int64     // records the consumer group has not consumed, last time we could tell
-	SourceDown     bool      // the source could not be asked last tick; drives one event per edge
-	SuspendChecked bool      // we have seen the operator complete our suspend and checked for a savepoint
+	Phase                 Phase
+	Snapshot              map[string]string
+	LastActivityAt        time.Time
+	SuspendedAt           time.Time
+	AwakeSince            time.Time
+	Restarts              RestartBudget
+	Reason                string
+	Generation            int64     // metadata.generation last seen; a newer one clears unrecoverable
+	ResumedAt             time.Time // set when we resume; cleared, and the latency reported, once the job is RUNNING
+	Pending               int64     // records the consumer group has not consumed, last time we could tell
+	SourceDown            bool      // the source could not be asked last tick; drives one event per edge
+	SuspendChecked        bool      // we have seen the operator complete our suspend and checked for a savepoint
+	ResumeStalledReported bool      // ResumeStalled was raised for the current resume
 }
 
 func Initial(now time.Time) State {
@@ -88,6 +89,7 @@ func (s State) Data() map[string]string {
 		"pending":          strconv.FormatInt(s.Pending, 10),
 		"source-down":      strconv.FormatBool(s.SourceDown),
 		"suspend-checked":  strconv.FormatBool(s.SuspendChecked),
+		"resume-stalled":   strconv.FormatBool(s.ResumeStalledReported),
 	}
 }
 
@@ -116,6 +118,7 @@ func FromData(d map[string]string) (State, bool) {
 	s.Pending, _ = strconv.ParseInt(d["pending"], 10, 64)
 	s.SourceDown, _ = strconv.ParseBool(d["source-down"])
 	s.SuspendChecked, _ = strconv.ParseBool(d["suspend-checked"])
+	s.ResumeStalledReported, _ = strconv.ParseBool(d["resume-stalled"])
 	return s, true
 }
 

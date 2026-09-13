@@ -18,6 +18,9 @@ spec:
     restart-strategy.type: none
     execution.checkpointing.savepoint-dir: file:///flink-data/savepoints
     execution.checkpointing.dir: file:///flink-data/checkpoints
+    # The operator asks for canonical savepoints by default; the example job's Print sink cannot
+    # produce them on Flink 2.x (UnsupportedOperationException on stop-with-savepoint). Native works.
+    kubernetes.operator.savepoint.format.type: NATIVE
   serviceAccount: flink
   jobManager: { resource: { memory: "1024m", cpu: 0.5 } }
   taskManager: { resource: { memory: "1024m", cpu: 0.5 } }
