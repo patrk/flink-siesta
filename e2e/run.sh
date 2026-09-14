@@ -5,7 +5,7 @@
 # own, so a failing one reruns in minutes, and CI runs them on separate clusters.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
-all="restart-budget job-graph outage suspend-resume admission-gc"  # longest first, so the pairs overlap best
+all="restart-budget job-graph outage suspend-resume sources-auto admission-gc"  # longest first, so the pairs overlap best
 scenarios=${E2E_SCENARIO:-$all}
 par=${E2E_PARALLEL:-2}
 logdir=${E2E_LOGDIR:-/tmp/siesta-e2e}

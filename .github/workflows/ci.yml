@@ -29,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [suspend-resume, job-graph, outage, admission-gc, restart-budget]
+        scenario: [suspend-resume, job-graph, outage, admission-gc, restart-budget, sources-auto]
     name: e2e ${{ matrix.scenario }}
     steps:
       - uses: actions/checkout@v7
