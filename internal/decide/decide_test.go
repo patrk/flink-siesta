@@ -205,3 +205,17 @@ func TestResumedOutsideSiestaBecomesActiveWithFreshClocks(t *testing.T) {
 		t.Fatalf("the reason must name it, got %q", got.Next.Reason)
 	}
 }
+
+// The lag reasons are the answer to "why is this idle job still awake", so unlike the other
+// waits they must land in the state that is written to the object.
+func TestLagReasonsReachTheObject(t *testing.T) {
+	d := New(rp)
+	prev := withSnap(state.Initial(t0), snap("1"))
+	later := t0.Add(15 * 24 * time.Hour)
+	if got := d.Decide(withGroup(auto), prev, running, seen(snap("1")), later); got.Next.Reason != "lag unknown for group g" {
+		t.Fatalf("Next.Reason = %q", got.Next.Reason)
+	}
+	if got := d.Decide(withGroup(auto), prev, running, lag(snap("1"), 9), later); got.Next.Reason != "records pending for group g" || got.Next.Pending != 9 {
+		t.Fatalf("Next = %+v", got.Next)
+	}
+}

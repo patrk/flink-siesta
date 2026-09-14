@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.2
+
+- The `lag unknown` and `records pending` reasons now reach the object's `reason` annotation, as the README already claimed. Before, they were only logged.
+- Chart: `podLabels` is rendered (it was declared and ignored), and `imagePullSecrets` and `priorityClassName` are new knobs. Clusters that mandate labels, a pull secret or a priority class on every pod can now install without a wrapper chart.
+
 ## 0.2.1
 
 - Kafka credentials can be read from files and are read on every new connection, so a rotated Secret needs no restart. The chart mounts the SASL Secret as files.

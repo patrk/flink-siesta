@@ -57,5 +57,7 @@ tolerations: []
 affinity: {}
 podAnnotations: {}
 podLabels: {}
+imagePullSecrets: []
+priorityClassName: ""
 extraEnv: []
 extraObjects: []

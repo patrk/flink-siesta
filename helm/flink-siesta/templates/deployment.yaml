@@ -13,12 +13,23 @@ spec:
     matchLabels: { app.kubernetes.io/name: flink-siesta, app.kubernetes.io/instance: {{ .Release.Name }} }
   template:
     metadata:
-      labels: { app.kubernetes.io/name: flink-siesta, app.kubernetes.io/instance: {{ .Release.Name }} }
+      labels:
+        app.kubernetes.io/name: flink-siesta
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- with .Values.podAnnotations }}
       annotations: {{ toYaml . | nindent 8 }}
       {{- end }}
     spec:
       serviceAccountName: {{ include "siesta.fullname" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
       securityContext: {{ toYaml .Values.podSecurityContext | nindent 8 }}
       {{- with .Values.nodeSelector }}
       nodeSelector: {{ toYaml . | nindent 8 }}
@@ -91,6 +102,8 @@ spec:
             {{- if .Values.kafka.tls.existingSecret }}
             - { name: kafka-tls, mountPath: /etc/siesta/kafka-tls, readOnly: true }
             {{- end }}
+          {{- end }}
+      {{- if or .Values.kafka.tls.existingSecret .Values.kafka.sasl.existingSecret }}
       volumes:
         {{- if .Values.kafka.sasl.existingSecret }}
         - name: kafka-auth
@@ -100,7 +113,7 @@ spec:
         - name: kafka-tls
           secret: { secretName: {{ .Values.kafka.tls.existingSecret }} }
         {{- end }}
-          {{- end }}
+      {{- end }}
 {{- range .Values.extraObjects }}
 ---
 {{ toYaml . }}

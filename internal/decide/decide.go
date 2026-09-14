@@ -184,13 +184,16 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, obs Obser
 			}
 			if p.ConsumerGroup != "" {
 				// Idle also means caught up: nothing pending for the job's consumer group.
+				// These two reasons are written to the object, unlike the other waits: an idle job
+				// that stays awake is a question someone will ask, and this is the answer.
 				if !obs.LagKnown {
-					return Decision{Action: None, Next: cur, Reason: "lag unknown for group " + p.ConsumerGroup}
+					cur.Reason = "lag unknown for group " + p.ConsumerGroup
+					return Decision{Action: None, Next: cur, Reason: cur.Reason}
 				}
 				if obs.Pending > 0 {
 					// Coarse reason on the object; the number goes to the store.
-					cur.Pending = obs.Pending
-					return Decision{Action: None, Next: cur, Reason: "records pending for group " + p.ConsumerGroup}
+					cur.Pending, cur.Reason = obs.Pending, "records pending for group "+p.ConsumerGroup
+					return Decision{Action: None, Next: cur, Reason: cur.Reason}
 				}
 				cur.Pending = 0
 			}
