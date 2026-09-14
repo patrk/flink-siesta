@@ -31,15 +31,13 @@ metrics are the same from Flink 1.20 through 2.2.
 Everything the REST API is asked is read-only, and `--flink-rest=false` switches it off
 entirely for clusters that will not open that path.
 
-Two things the first real run taught, both now part of the design. The reader registers its
-topic metrics a few seconds after the job reports RUNNING, so the check gives a job three
-ticks before "no Kafka source" counts as an answer. And the connector registers
-`pendingRecords` only after a partition has delivered its first record, so while the gauge
-is absent the reader's `currentOffset` gauges decide: all at their initial value means nothing
-was fetched and nothing is pending, anything else without the gauge is unknown.
+One thing the first real run taught, now part of the design: the reader registers its topic
+metrics a few seconds after the job reports RUNNING, so the check gives a job three ticks
+before "no Kafka source" counts as an answer. What the same run taught about `pendingRecords`
+is in ADR 13, which replaced it.
 
 **Consequences.** The controller now dials a third destination, the JobManager Service in
 its own namespace, and the README says which network policy line that is. One extra HTTP
-round trip per tick for `lag: job` deployments, and a handful once per job instance for
+round trips per tick for `idle: job` deployments, and a handful once per job instance for
 the check. The verification is a Warning, not a refusal: a wrong `sources` list still
 suspends, but now it is visible in `kubectl describe` before anyone is surprised.

@@ -15,6 +15,6 @@ suspend, consistent with "unknown never acts".
 Without the annotation the ADR 3 behaviour stands and the README says so. The check is a
 second, optional probe interface so that a source without consumer groups still fits.
 
-**Consequences.** "Idle" has the meaning an operator expects when the group is known. One
-extra admin call per reconcile for annotated deployments. Users must know their job's group
+**Consequences.** "Idle" has the meaning an operator expects when the group is known. Two
+extra admin calls per reconcile for annotated deployments, the committed and the end offsets. Users must know their job's group
 id; for Flink's Kafka source that is the `group.id` the job sets.

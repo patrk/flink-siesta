@@ -20,8 +20,8 @@ config:
   pollInterval: 1m
   probeTimeout: 10s
   # Ask each running job's REST API (<deployment>-rest:8081) to verify the sources annotation
-  # against its graph and, with the lag: job annotation, for pendingRecords. Needs egress from
-  # the controller to the JobManager pods on that port.
+  # against its graph and, with the idle: job annotation, whether the job objects to sleeping.
+  # Needs egress from the controller to the JobManager pods on that port.
   flinkRest: true
   restart:
     maxRestarts: 3

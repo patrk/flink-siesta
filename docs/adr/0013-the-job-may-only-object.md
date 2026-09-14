@@ -18,10 +18,11 @@ happens when every configured gate agrees. Any busy or unknown gate blocks and i
 written to the object. Nothing on the wake side changes: the broker's end offsets remain the
 only wake signal, because a suspended job has no metrics to ask.
 
-1. The operator is not busy, and the deployment keeps its position (ADRs 6 and 11).
+1. The operator is not busy (ADR 11).
 2. The broker gate: end offsets unchanged for `idle-after`, awake for `min-awake` (ADR 3).
-3. The lag gate, with `consumer-group`: committed offsets equal the end offsets (ADR 7).
-4. The job gate, with `idle: job`, one gate with three values:
+3. The deployment keeps its position, else the suspend is refused, once (ADR 6).
+4. The lag gate, with `consumer-group`: committed offsets equal the end offsets (ADR 7).
+5. The job gate, with `idle: job`, one gate with three values:
    - **idle**: every declared partition's `currentOffset` plus one equals the end offset the
      broker gate read this tick, and `sourceIdleTime` is at least one poll interval. A
      reader still at its initial offset counts as caught up only if it also reports idle,
@@ -32,7 +33,9 @@ only wake signal, because a suspended job has no metrics to ask.
      exposes no offset for a declared partition.
 
 `pendingRecords` is not used. The exact comparison uses data the controller already holds
-and has no lazy registration to wait for.
+and has no lazy registration to wait for. It is the one place that reads the broker snapshot
+as numbers rather than as an opaque value (ADR 3): the gate lives next to the reconciler, the
+decider still only receives its three-valued answer.
 
 **Rejected.** A weighted score lets a busy vote be outweighed and has no table to enumerate.
 A fallback changes the rule silently when the REST endpoint is down, so the same job would

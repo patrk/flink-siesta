@@ -1,0 +1,23 @@
+# Two alerts worth having, as a PrometheusRule. Both fire on the controller's own metrics and
+# nothing in the controller reads them (ADR 9).
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: flink-siesta
+spec:
+  groups:
+    - name: flink-siesta
+      rules:
+        - alert: SiestaProbeErrors
+          expr: sum by (kind) (increase(siesta_probe_errors_total[10m])) > 5
+          for: 10m
+          labels: { severity: warning }
+          annotations:
+            summary: "Siesta cannot ask {{ $labels.kind }}"
+            description: "Kafka or a job's REST API has failed for ten minutes. No job is suspended or resumed while its source is unknown, so idle jobs keep running and sleeping jobs keep sleeping."
+        - alert: SiestaJobUnrecoverable
+          expr: increase(siesta_transitions_total{action="mark-unrecoverable"}[1h]) > 0
+          labels: { severity: critical }
+          annotations:
+            summary: "Siesta gave up on {{ $labels.namespace }}/{{ $labels.name }}"
+            description: "The restart budget is exhausted or the failure matched an unrecoverable pattern. Fix the cause, then edit the FlinkDeployment spec; a new generation clears the state."
