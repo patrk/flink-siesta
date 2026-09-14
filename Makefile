@@ -6,7 +6,7 @@ IMAGE ?= siesta:e2e
 KUBE_CONTEXT ?= kind-siesta
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-.PHONY: deps build test it envtest bench soak lint image kind-up kind-deps kind-down e2e e2e-chaos e2e-soak
+.PHONY: deps build test it envtest bench soak lint image kind-up kind-deps kind-down e2e e2e-job e2e-chaos e2e-soak
 
 deps:
 	go get sigs.k8s.io/controller-runtime@latest k8s.io/apimachinery@latest k8s.io/client-go@latest \
@@ -43,16 +43,21 @@ kind-deps:
 	helm --kube-context $(KUBE_CONTEXT) install flink-kubernetes-operator flink-operator/flink-kubernetes-operator --set webhook.create=false
 	kubectl --context $(KUBE_CONTEXT) wait --for=condition=Available deploy/flink-kubernetes-operator --timeout=180s
 
-e2e: image
+# The e2e job: a Kafka source to a discarding sink, built on the Flink image under test.
+e2e-job:
+	bash e2e/job/build.sh $(FLINK_VERSION)
+	kind load docker-image siesta-e2e-job:$(FLINK_VERSION) --name siesta
+
+e2e: image e2e-job
 	kind load docker-image $(IMAGE) --name siesta
 	IMAGE_REPO=siesta IMAGE_TAG=e2e KUBE_CONTEXT=$(KUBE_CONTEXT) FLINK_VERSION=$(FLINK_VERSION) bash e2e/run.sh
 
 kind-down: ; kind delete cluster --name siesta
 
-e2e-chaos: image
+e2e-chaos: image e2e-job
 	kind load docker-image $(IMAGE) --name siesta
 	IMAGE_REPO=siesta IMAGE_TAG=e2e KUBE_CONTEXT=$(KUBE_CONTEXT) FLINK_VERSION=$(FLINK_VERSION) bash e2e/chaos.sh
 
-e2e-soak: image
+e2e-soak: image e2e-job
 	kind load docker-image $(IMAGE) --name siesta
 	IMAGE_REPO=siesta IMAGE_TAG=e2e KUBE_CONTEXT=$(KUBE_CONTEXT) FLINK_VERSION=$(FLINK_VERSION) bash e2e/soak.sh

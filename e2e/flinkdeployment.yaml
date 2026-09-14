@@ -8,15 +8,16 @@ metadata:
     siesta.flink.io/sources: e2e-in
     siesta.flink.io/idle-after: 2m
     siesta.flink.io/min-awake: 30s
+    siesta.flink.io/idle: job
 spec:
-  image: flink:2.2
+  image: siesta-e2e-job:2.2
   flinkVersion: v2_2
   flinkConfiguration:
     taskmanager.numberOfTaskSlots: "1"
     execution.checkpointing.savepoint-dir: file:///flink-data/savepoints
     execution.checkpointing.dir: file:///flink-data/checkpoints
-    # The operator asks for canonical savepoints by default; the example job's Print sink cannot
-    # produce them on Flink 2.x (UnsupportedOperationException on stop-with-savepoint). Native works.
+    # Native savepoints: the same state backend before and after, and no operator that cannot
+    # produce the canonical format gets in the way.
     kubernetes.operator.savepoint.format.type: NATIVE
     high-availability.type: kubernetes
     high-availability.storageDir: file:///flink-data/ha
@@ -32,7 +33,10 @@ spec:
         - name: flink-data
           persistentVolumeClaim: { claimName: flink-data }
   job:
-    jarURI: local:///opt/flink/examples/streaming/StateMachineExample.jar
+    # e2e/job: a Kafka source to a discarding sink. run.sh later slows it down on purpose.
+    jarURI: local:///opt/flink/usrlib/e2e-job.jar
+    entryClass: e2e.KafkaToNothing
+    args: ["--bootstrap", "kafka.default.svc:9092", "--topics", "e2e-in", "--group", "e2e"]
     parallelism: 1
     upgradeMode: savepoint
     state: running
