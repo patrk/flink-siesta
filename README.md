@@ -168,7 +168,7 @@ Metrics describe what the controller did. Nothing in the controller reads them. 
 
 The image and the chart are published to the GitHub Container Registry on every tag.
 
-    helm install siesta oci://ghcr.io/patrk/charts/flink-siesta --version 0.2.2 \
+    helm install siesta oci://ghcr.io/patrk/charts/flink-siesta --version 0.2.3 \
       --set kafka.bootstrapServers=... --set kafka.securityProtocol=SASL_SSL \
       --set kafka.sasl.existingSecret=kafka-auth
 

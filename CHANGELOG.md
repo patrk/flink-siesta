@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.3
+
+- Fix: the Role lacked `patch` on events. The events API folds an identical event within six minutes into a series on the first one, which is a patch, so every repeat of a reason with the same message was dropped. Symptoms: one `SourceUnreachable` for two outages, one `Suspended` for two suspends. Found by the e2e once its steps ran closer together.
+
 ## 0.2.2
 
 - The `lag unknown` and `records pending` reasons now reach the object's `reason` annotation, as the README already claimed. Before, they were only logged.
