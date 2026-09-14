@@ -42,6 +42,7 @@ The prefix is configurable through `siesta.annotation-prefix` and defaults to `s
 | `<prefix>/sources` | you | comma-separated topic names |
 | `<prefix>/source-type` | you | `kafka`, the default. Other probes can be added without touching the core. |
 | `<prefix>/consumer-group` | you | optional. When set, idle also means the group has consumed everything. |
+| `<prefix>/lag` | you | optional. `job` makes idle also mean the running job reports zero `pendingRecords` on its sources. Needs no consumer group. |
 | `<prefix>/idle-after` | you | a duration such as `336h` or `14d` |
 | `<prefix>/min-awake` | you | a duration, default `1h` |
 | `<prefix>/restart` | you | `auto` or `off` |
@@ -80,6 +81,8 @@ A private CA goes in a Secret referenced by `kafka.tls.existingSecret` under the
 - **Credential rotation needs no restart.** The chart mounts the SASL Secret as files and the controller reads them on every new connection, so a rotated Secret is picked up as soon as the kubelet refreshes the mount and the next connection authenticates. When running the binary outside the chart with `KAFKA_SASL_USERNAME` and `KAFKA_SASL_PASSWORD` in the environment, a rotation still needs a restart.
 - **The operator's own restart wins.** If a deployment enables `kubernetes.operator.cluster.health-check.enabled`, Siesta leaves failed jobs to the operator and says `restart left to the operator's health check`, so the two never fight.
 - **A stalled resume is reported.** If a resumed job is not RUNNING after `--resume-stall-after`, ten minutes by default, `ResumeStalled` is raised once. The usual causes are a full cluster, a missing image or a savepoint that no longer restores.
+- **The sources annotation is checked against the job.** While a job runs, its JobManager knows which topics its Kafka sources read. Once per job instance the controller compares that with `sources` and raises `SourcesVerified`, `SourcesDrift` or, for a job without Kafka source metrics, `SourcesUnverified`. It never edits the annotation. A job may read a topic you do not want it woken by, and a sleeping job has no JobManager to ask.
+- **Caught up, as the job sees it.** `lag: job` reads the same `pendingRecords` gauge the operator's autoscaler uses, so it works without a consumer group, without checkpointing and without a group ACL. If the REST API is unreachable, lag is unknown and the job is not suspended. The reason says `lag unknown in the job`, which is how a missing network policy shows up. Both features need egress from the controller to the JobManager pods on port 8081, the operator's `<deployment>-rest` Service. `config.flinkRest: false` switches them off.
 - **A suspend without a savepoint is reported.** If the savepoint fails, the operator falls back to its last checkpoint and still reports the suspend as done. Siesta raises `SuspendedWithoutSavepoint` once, and the resume still works from that checkpoint. A common cause is that the operator asks for canonical savepoints by default and some operators cannot produce them, the Print sink on Flink 2.x for one. If the job only ever resumes on the same state backend, set `kubernetes.operator.savepoint.format.type: NATIVE` in its `flinkConfiguration`.
 
 ## Limits
@@ -87,12 +90,10 @@ A private CA goes in a Secret referenced by `kafka.tls.existingSecret` under the
 These follow from what suspending a Flink job means, and Siesta cannot remove them.
 
 - **Processing time stops while a job is suspended.** Processing-time timers and windows fire late, all at once, after a resume. Event-time jobs are unaffected. Only suspend jobs whose semantics survive a pause.
-- **Lag needs checkpointing.** Flink commits consumer-group offsets only on checkpoints. If you set `consumer-group` on a job that does not checkpoint, the lag is never known and the job is never suspended. The reason will say `lag unknown`. A job without checkpointing has no position to resume from anyway.
+- **Group lag needs checkpointing.** Flink commits consumer-group offsets only on checkpoints. If you set `consumer-group` on a job that does not checkpoint, the lag is never known and the job is never suspended. The reason will say `lag unknown`. `lag: job` does not have this limit, but a job without checkpointing has no position to resume from anyway.
 - **Application mode only.** `FlinkSessionJob` has no pods of its own to take down and no lifecycle state to key on. Run one controller instance per namespace. Two instances in one namespace would share ConfigMap names and the leader lease.
 
-These are on the roadmap.
-
-- **Only the declared sources are watched** (0.3). A job that also reads a non-Kafka source, such as a broadcast stream or a JDBC lookup, is not resumed by activity there, and the hand-written `sources` annotation can drift from the job graph. The job graph is available from Flink's REST API while the job runs, so a later version can check the annotation against it and warn on drift.
+- **Only the declared sources wake a job.** A job that also reads a non-Kafka source, such as a broadcast stream or a JDBC lookup, is not resumed by activity there. Drift between the annotation and the job's Kafka sources is reported, see above, but not corrected.
 
 ## With Argo CD or Flux
 
@@ -163,6 +164,7 @@ Metrics describe what the controller did. Nothing in the controller reads them. 
 - Flink Kubernetes Operator 1.10 or later. Siesta uses `spec.job.state`, `status.jobStatus.upgradeSavepointPath` and `status.lifecycleState`.
 - A savepoint directory configured on the FlinkDeployment, `execution.checkpointing.savepoint-dir` on Flink 2.x or `state.savepoints.dir` on 1.x, and `upgradeMode: savepoint` or `last-state`. The controller never changes the upgrade mode. On `stateless` it refuses to suspend and says so in an Event, because a resume would replay the topic from the start.
 - A Kafka credential with Describe on the topics, and on the consumer group if you use one.
+- Network access from the controller to the JobManager pods on port 8081, unless `config.flinkRest` is off. With Cilium that is one egress rule to the pods labelled `type: flink-native-kubernetes`.
 
 ## Install
 

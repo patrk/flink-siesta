@@ -22,6 +22,7 @@ func Live(u *unstructured.Unstructured) decide.Live {
 		specState = "running" // the operator's default when the field is absent
 	}
 	jobState, _, _ := unstructured.NestedString(u.Object, "status", "jobStatus", "state")
+	jobID, _, _ := unstructured.NestedString(u.Object, "status", "jobStatus", "jobId")
 	lifecycle, _, _ := unstructured.NestedString(u.Object, "status", "lifecycleState")
 	// The operator reports reconciliation problems in status.reconciliationStatus.error and the
 	// job's own failure, as a serialized throwable, in status.error. Patterns match either.
@@ -42,6 +43,7 @@ func Live(u *unstructured.Unstructured) decide.Live {
 		SavepointPath:    savepoint,
 		OperatorRestarts: healthCheck == "true",
 		Generation:       u.GetGeneration(),
+		JobID:            jobID,
 		JobState:         jobState,
 		LifecycleState:   lifecycle,
 		ReconcileError:   recErr,

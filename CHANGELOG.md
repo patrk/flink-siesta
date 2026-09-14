@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased, 0.3.0
+
+- The `sources` annotation is verified against the running job's Kafka sources once per job instance: `SourcesVerified`, `SourcesDrift` or `SourcesUnverified` events. Never corrected.
+- `lag: job` makes idle also require zero `pendingRecords` as the job reports it, with or without a consumer group.
+- `--flink-rest` and `--flink-rest-port` flags, `config.flinkRest` chart value. The controller now dials the operator's `<deployment>-rest` Service.
+- `siesta_probe_errors_total{kind="flink-rest"}`.
+
 ## 0.2.2
 
 - The `lag unknown` and `records pending` reasons now reach the object's `reason` annotation, as the README already claimed. Before, they were only logged.

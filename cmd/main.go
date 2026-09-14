@@ -18,6 +18,7 @@ import (
 
 	"github.com/patrk/flink-siesta/internal/controller"
 	"github.com/patrk/flink-siesta/internal/decide"
+	"github.com/patrk/flink-siesta/internal/flink"
 	"github.com/patrk/flink-siesta/internal/probe"
 	"github.com/patrk/flink-siesta/internal/store"
 )
@@ -53,6 +54,8 @@ func run() error {
 		probeTimeout   = flag.Duration("probe-timeout", 10*time.Second, "bound for one call to the source")
 		stallAfter     = flag.Duration("resume-stall-after", 10*time.Minute, "warn once if a resumed job is not RUNNING after this")
 		failingAfter   = flag.Duration("failing-after", 10*time.Minute, "RESTARTING longer than this counts as failing")
+		flinkRest      = flag.Bool("flink-rest", true, "ask the running job's REST API to verify sources and, with lag: job, for pendingRecords")
+		flinkRestPort  = flag.Int("flink-rest-port", 8081, "port of the operator's <deployment>-rest Service")
 		unrecoverable  = flag.String("unrecoverable-patterns", "UnknownTopicOrPartition,does not exist,ImagePullBackOff,ErrImagePull",
 			"comma-separated substrings of status.reconciliationStatus.error that mean: never restart")
 	)
@@ -112,6 +115,9 @@ func run() error {
 			FailingAfter:  *failingAfter,
 			Unrecoverable: strings.Split(*unrecoverable, ","),
 		}),
+	}
+	if *flinkRest {
+		r.Flink = flink.NewREST(*flinkRestPort)
 	}
 	if err := r.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("controller: %w", err)

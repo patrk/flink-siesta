@@ -52,6 +52,7 @@ spec:
             - --restart-window={{ .Values.config.restart.window }}
             - --failing-after={{ .Values.config.restart.failingAfter }}
             - --restart-backoff={{ .Values.config.restart.backoff }}
+            - --flink-rest={{ .Values.config.flinkRest }}
             - --leader-elect={{ gt (int .Values.replicaCount) 1 }}
           env:
             - name: POD_NAMESPACE

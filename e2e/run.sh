@@ -85,6 +85,9 @@ transitions_while_unknown() { events | awk -v n="$1" '
   END {print c+0}'; }
 events | grep -E "Suspended|Resumed" | tail -4
 
+echo "the example job reads no Kafka topic: sources must be reported unverified, once per job instance (before and after the resume)"
+i=0; until [ "$(events | grep -c '^SourcesUnverified')" = 2 ]; do i=$((i+5)); [ $i -ge 120 ] && { echo "expected two SourcesUnverified events, got:"; events | grep -E '^Sources' ; exit 1; }; sleep 5; done
+
 echo "take Kafka away: one SourceUnreachable, no transitions; bring it back: one SourceReachable"
 k -n $ns scale deploy/kafka --replicas=0
 i=0; until events | grep -q '^SourceUnreachable'; do i=$((i+5)); [ $i -ge 180 ] && { echo "no SourceUnreachable event"; exit 1; }; sleep 5; done

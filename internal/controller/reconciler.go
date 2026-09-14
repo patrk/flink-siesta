@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"strings"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -28,12 +29,21 @@ const (
 	defaultProbeTimeout = 10 * time.Second
 )
 
+// JobProbe reads from the running job's own REST API: the topics its Kafka sources consume
+// and the records they have not fetched yet. nil switches both uses off.
+type JobProbe interface {
+	Sources(ctx context.Context, namespace, name, jobID string) (flink.Sources, error)
+	Pending(ctx context.Context, namespace, name, jobID string, src flink.Sources) (int64, error)
+}
+
 type Reconciler struct {
 	client.Client
 	Prefix   string
 	DryRun   bool
 	Probe    probe.ActivityProbe
 	Lag      probe.LagProbe // optional; nil when the source cannot measure consumer lag
+	Flink    JobProbe       // optional; nil when the JobManager REST API is not to be used
+	jobs     sync.Map       // deployment key -> cachedJob; the graph is read once per job instance
 	Decider  *decide.Decider
 	Recorder recorder.EventRecorder
 	Now      func() time.Time // injectable clock; tests freeze it
@@ -84,6 +94,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := r.Get(ctx, req.NamespacedName, fd); err != nil {
 		if client.IgnoreNotFound(err) == nil {
 			metrics.Forget(req.Namespace, req.Name)
+			r.jobs.Delete(req.String())
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -118,6 +129,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 		return ctrl.Result{RequeueAfter: r.requeue()}, nil
 	}
+	live := flink.Live(fd)
 	obs := decide.Observation{}
 	pctx, cancel := context.WithTimeout(ctx, r.probeTimeout())
 	defer cancel()
@@ -125,13 +137,49 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if !obs.Known {
 		metrics.ProbeErrors.WithLabelValues("offsets").Inc()
 	}
-	if pol.ConsumerGroup != "" && r.Lag != nil {
-		obs.Pending, obs.LagKnown = r.Lag.Lag(pctx, pol.ConsumerGroup, pol.Sources)
-		if !obs.LagKnown {
-			metrics.ProbeErrors.WithLabelValues("lag").Inc()
+
+	// The running job is asked two things, both only while it runs: once per job instance,
+	// whether the sources annotation matches its graph (an event, never a decision), and, with
+	// lag: job, how many records its sources still have to fetch.
+	job, jobKnown := r.jobSources(pctx, req, live)
+	if jobKnown && prev.SourcesChecked != live.JobID {
+		r.verifySources(fd, pol.Sources, job)
+		prev.SourcesChecked = live.JobID
+	}
+
+	// "Caught up" can come from the consumer group, from the job, or both; every requested
+	// source must be known and every one must be zero.
+	if pol.ConsumerGroup != "" || pol.LagFromJob {
+		obs.LagKnown = true
+		if pol.ConsumerGroup != "" {
+			n, ok := int64(0), false
+			if r.Lag != nil {
+				n, ok = r.Lag.Lag(pctx, pol.ConsumerGroup, pol.Sources)
+			}
+			if !ok {
+				metrics.ProbeErrors.WithLabelValues("lag").Inc()
+			}
+			obs.LagKnown = obs.LagKnown && ok
+			obs.Pending = max(obs.Pending, n)
+		}
+		if pol.LagFromJob {
+			n, ok := int64(0), false
+			if jobKnown {
+				var err error
+				if n, err = r.Flink.Pending(pctx, req.Namespace, req.Name, live.JobID, job); err != nil {
+					log.V(1).Info("pendingRecords unavailable", "err", err)
+				} else {
+					ok = true
+				}
+			}
+			if !ok {
+				metrics.ProbeErrors.WithLabelValues("flink-rest").Inc()
+			}
+			obs.LagKnown = obs.LagKnown && ok
+			obs.Pending = max(obs.Pending, n)
 		}
 	}
-	d := r.Decider.Decide(pol, prev, flink.Live(fd), obs, now)
+	d := r.Decider.Decide(pol, prev, live, obs, now)
 	log.Info("decided", "action", d.Action.String(), "reason", d.Reason)
 
 	// Reachability is reported once per edge, never per tick: an event when the source stops
@@ -147,7 +195,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	// The first time the operator reports our suspend as complete, check it took a savepoint.
 	// It falls back to last-state when a savepoint fails; the job still resumes, from an older
 	// checkpoint, and an operator on call should know.
-	live := flink.Live(fd)
 	if d.Next.Phase == state.Suspended && !prev.SuspendChecked && live.LifecycleState == "SUSPENDED" {
 		d.Next.SuspendChecked = true
 		if live.SavepointPath == "" {
@@ -206,6 +253,62 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: r.requeue()}, nil
+}
+
+type cachedJob struct {
+	id  string
+	src flink.Sources
+}
+
+// jobSources returns what the running job says about its sources, read once per job id and
+// cached in memory. ok=false when there is no REST probe, no running job, or the call failed.
+func (r *Reconciler) jobSources(ctx context.Context, req ctrl.Request, live decide.Live) (flink.Sources, bool) {
+	if r.Flink == nil || live.JobID == "" || live.JobState != "RUNNING" {
+		return flink.Sources{}, false
+	}
+	if c, has := r.jobs.Load(req.String()); has && c.(cachedJob).id == live.JobID {
+		return c.(cachedJob).src, true
+	}
+	src, err := r.Flink.Sources(ctx, req.Namespace, req.Name, live.JobID)
+	if err != nil {
+		ctrl.LoggerFrom(ctx).V(1).Info("job graph unavailable", "err", err)
+		metrics.ProbeErrors.WithLabelValues("flink-rest").Inc()
+		return flink.Sources{}, false
+	}
+	r.jobs.Store(req.String(), cachedJob{id: live.JobID, src: src})
+	return src, true
+}
+
+// verifySources compares the annotation with the job graph and says what it found, once per
+// job instance. It never changes the annotation: that is the user's contract, and a job can
+// legitimately read a topic it should not be woken by.
+func (r *Reconciler) verifySources(fd *unstructured.Unstructured, declared []string, job flink.Sources) {
+	switch {
+	case len(job.Topics) == 0:
+		r.event(fd, corev1.EventTypeWarning, "SourcesUnverified", "Verify",
+			"job exposes no Kafka source metrics; sources "+strings.Join(declared, ",")+" could not be checked against it")
+	case sameSet(declared, job.Topics):
+		r.event(fd, corev1.EventTypeNormal, "SourcesVerified", "Verify", "job reads exactly the annotated sources: "+strings.Join(job.Topics, ","))
+	default:
+		r.event(fd, corev1.EventTypeWarning, "SourcesDrift", "Verify",
+			"job reads "+strings.Join(job.Topics, ",")+" but the annotation lists "+strings.Join(declared, ","))
+	}
+}
+
+func sameSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, s := range a {
+		seen[s] = true
+	}
+	for _, s := range b {
+		if !seen[s] {
+			return false
+		}
+	}
+	return true
 }
 
 // repair reconciles memory with what the object itself says. The state annotation is written

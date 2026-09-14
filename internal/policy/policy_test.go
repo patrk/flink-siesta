@@ -19,6 +19,8 @@ func TestReadReportsProblemsInsteadOfDefaultingSilently(t *testing.T) {
 		{"missing sources", map[string]string{p + "/mode": "auto"}, true, 1, 14 * 24 * time.Hour},
 		{"garbage duration", map[string]string{p + "/mode": "auto", p + "/sources": "t", p + "/idle-after": "2 weeks"}, true, 1, 14 * 24 * time.Hour},
 		{"bad mode", map[string]string{p + "/mode": "maybe", p + "/sources": "t"}, true, 1, 14 * 24 * time.Hour},
+		{"lag from the job", map[string]string{p + "/mode": "auto", p + "/sources": "t", p + "/lag": "job"}, true, 0, 14 * 24 * time.Hour},
+		{"bad lag", map[string]string{p + "/mode": "auto", p + "/sources": "t", p + "/lag": "kafka"}, true, 1, 14 * 24 * time.Hour},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

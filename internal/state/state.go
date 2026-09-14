@@ -29,6 +29,7 @@ type State struct {
 	SourceDown            bool      // the source could not be asked last tick; drives one event per edge
 	SuspendChecked        bool      // we have seen the operator complete our suspend and checked for a savepoint
 	ResumeStalledReported bool      // ResumeStalled was raised for the current resume
+	SourcesChecked        string    // job id whose graph the sources annotation was last checked against
 }
 
 func Initial(now time.Time) State {
@@ -90,6 +91,7 @@ func (s State) Data() map[string]string {
 		"source-down":      strconv.FormatBool(s.SourceDown),
 		"suspend-checked":  strconv.FormatBool(s.SuspendChecked),
 		"resume-stalled":   strconv.FormatBool(s.ResumeStalledReported),
+		"sources-checked":  s.SourcesChecked,
 	}
 }
 
@@ -119,6 +121,7 @@ func FromData(d map[string]string) (State, bool) {
 	s.SourceDown, _ = strconv.ParseBool(d["source-down"])
 	s.SuspendChecked, _ = strconv.ParseBool(d["suspend-checked"])
 	s.ResumeStalledReported, _ = strconv.ParseBool(d["resume-stalled"])
+	s.SourcesChecked = d["sources-checked"]
 	return s, true
 }
 

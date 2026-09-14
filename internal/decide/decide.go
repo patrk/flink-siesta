@@ -18,6 +18,7 @@ type Live struct {
 	// restart mechanisms would fight, so ours steps back and says so.
 	OperatorRestarts bool
 	Generation       int64  // metadata.generation; a change means someone edited the spec
+	JobID            string // status.jobStatus.jobId; changes on every start, so it keys "once per job instance"
 	JobState         string // Flink JobStatus: RUNNING, FAILED, RESTARTING, FINISHED, ...
 	LifecycleState   string // operator: CREATED, SUSPENDED, UPGRADING, DEPLOYED, STABLE, ROLLING_BACK, ROLLED_BACK, FAILED
 	ReconcileError   string // status.reconciliationStatus.error
@@ -182,17 +183,17 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, obs Obser
 				cur.Reason = "suspend refused: upgradeMode " + live.UpgradeMode + " would lose the job's position"
 				return Decision{Action: Refuse, Next: cur, Reason: cur.Reason}
 			}
-			if p.ConsumerGroup != "" {
-				// Idle also means caught up: nothing pending for the job's consumer group.
+			if p.ConsumerGroup != "" || p.LagFromJob {
+				// Idle also means caught up: nothing pending, as the consumer group or the job reports it.
 				// These two reasons are written to the object, unlike the other waits: an idle job
 				// that stays awake is a question someone will ask, and this is the answer.
 				if !obs.LagKnown {
-					cur.Reason = "lag unknown for group " + p.ConsumerGroup
+					cur.Reason = "lag unknown " + lagSource(p)
 					return Decision{Action: None, Next: cur, Reason: cur.Reason}
 				}
 				if obs.Pending > 0 {
 					// Coarse reason on the object; the number goes to the store.
-					cur.Pending, cur.Reason = obs.Pending, "records pending for group "+p.ConsumerGroup
+					cur.Pending, cur.Reason = obs.Pending, "records pending "+lagSource(p)
 					return Decision{Action: None, Next: cur, Reason: cur.Reason}
 				}
 				cur.Pending = 0
@@ -227,4 +228,16 @@ func (d *Decider) unrecoverable(live Live) string {
 		}
 	}
 	return ""
+}
+
+// lagSource names where "caught up" is measured, for the reason on the object.
+func lagSource(p policy.Policy) string {
+	switch {
+	case p.ConsumerGroup != "" && p.LagFromJob:
+		return "for group " + p.ConsumerGroup + " and in the job"
+	case p.LagFromJob:
+		return "in the job"
+	default:
+		return "for group " + p.ConsumerGroup
+	}
 }

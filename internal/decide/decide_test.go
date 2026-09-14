@@ -36,6 +36,11 @@ func withGroup(p policy.Policy) policy.Policy {
 	return p
 }
 
+func withJobLag(p policy.Policy) policy.Policy {
+	p.LagFromJob = true
+	return p
+}
+
 func suspendedState() state.State {
 	return state.State{Phase: state.Suspended, Snapshot: snap("100"), LastActivityAt: t0, SuspendedAt: t0, AwakeSince: t0, Reason: "idle"}
 }
@@ -70,6 +75,10 @@ func TestDecide(t *testing.T) {
 		{"with a consumer group, pending records block suspend", withGroup(auto), withSnap(state.Initial(t0), snap("1")), running, lag(snap("1"), 42), t0.Add(15 * 24 * time.Hour), None},
 		{"with a consumer group, unknown lag blocks suspend", withGroup(auto), withSnap(state.Initial(t0), snap("1")), running, seen(snap("1")), t0.Add(15 * 24 * time.Hour), None},
 		{"with a consumer group, caught up suspends", withGroup(auto), withSnap(state.Initial(t0), snap("1")), running, lag(snap("1"), 0), t0.Add(15 * 24 * time.Hour), Suspend},
+		{"lag from the job, unknown blocks suspend", withJobLag(auto), withSnap(state.Initial(t0), snap("1")), running, seen(snap("1")), t0.Add(15 * 24 * time.Hour), None},
+		{"lag from the job, pending records block suspend", withJobLag(auto), withSnap(state.Initial(t0), snap("1")), running, lag(snap("1"), 7), t0.Add(15 * 24 * time.Hour), None},
+		{"lag from the job, caught up suspends", withJobLag(auto), withSnap(state.Initial(t0), snap("1")), running, lag(snap("1"), 0), t0.Add(15 * 24 * time.Hour), Suspend},
+		{"group and job together, caught up suspends", withJobLag(withGroup(auto)), withSnap(state.Initial(t0), snap("1")), running, lag(snap("1"), 0), t0.Add(15 * 24 * time.Hour), Suspend},
 		{"idle boundary: exactly idle-after is not yet idle", auto, withSnap(state.Initial(t0), snap("1")), running, seen(snap("1")), t0.Add(14 * 24 * time.Hour), None},
 		{"idle boundary: one second past is idle", auto, withSnap(state.Initial(t0), snap("1")), running, seen(snap("1")), t0.Add(14*24*time.Hour + time.Second), Suspend},
 		{"one partition of several moving is activity", auto, withSnap(state.Initial(t0), map[string]string{"t-0": "1", "t-1": "1"}), running, seen(map[string]string{"t-0": "1", "t-1": "2"}), t0.Add(30 * 24 * time.Hour), None},

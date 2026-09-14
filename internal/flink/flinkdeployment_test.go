@@ -24,6 +24,14 @@ func TestLiveReadsBothErrorFields(t *testing.T) {
 	}
 }
 
+func TestLiveReadsTheJobID(t *testing.T) {
+	u := New()
+	_ = unstructured.SetNestedField(u.Object, "abc123", "status", "jobStatus", "jobId")
+	if got := Live(u).JobID; got != "abc123" {
+		t.Fatalf("JobID = %q", got)
+	}
+}
+
 func TestLiveReadsTheOperatorHealthCheckFlag(t *testing.T) {
 	u := New()
 	if err := unstructured.SetNestedField(u.Object, "true", "spec", "flinkConfiguration", "kubernetes.operator.cluster.health-check.enabled"); err != nil {
