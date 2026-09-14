@@ -3,9 +3,14 @@
 ## Unreleased, 0.3.0
 
 - The `sources` annotation is verified against the running job's Kafka sources once per job instance: `SourcesVerified`, `SourcesDrift` or `SourcesUnverified` events. Never corrected.
-- `lag: job` makes idle also require zero `pendingRecords` as the job reports it, with or without a consumer group.
+- `idle: job` adds the running job's own view as a last gate, ADR 13: exact pending from the reader's emitted offsets against the broker's end offsets, plus the source's idle time. It may hold a suspend, never cause one or wake a job.
 - `--flink-rest` and `--flink-rest-port` flags, `config.flinkRest` chart value. The controller now dials the operator's `<deployment>-rest` Service.
 - `siesta_probe_errors_total{kind="flink-rest"}`.
+- The e2e job now reads Kafka: a small DataStream job under `e2e/job`, built per Flink version. The e2e asserts `SourcesVerified`, `SourcesDrift` and a suspend held back by the job gate while a burst drains.
+
+## 0.2.3
+
+- Fix: the Role lacked `patch` on events. The events API folds an identical event within six minutes into a series on the first one, which is a patch, so every repeat of a reason with the same message was dropped. Symptoms: one `SourceUnreachable` for two outages, one `Suspended` for two suspends. Found by the e2e once its steps ran closer together.
 
 ## 0.2.2
 

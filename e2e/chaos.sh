@@ -9,7 +9,7 @@ k() { kubectl --context "$ctx" "$@"; }
 FLINK_VERSION=${FLINK_VERSION:-2.2}
 render() {
   local out; out=$(mktemp)
-  sed -e "s#image: flink:2.2#image: flink:${FLINK_VERSION}#" -e "s#flinkVersion: v2_2#flinkVersion: v${FLINK_VERSION/./_}#" "$1" > "$out"
+  sed -e "s#image: flink:2.2#image: flink:${FLINK_VERSION}#" -e "s#siesta-e2e-job:2.2#siesta-e2e-job:${FLINK_VERSION}#" -e "s#flinkVersion: v2_2#flinkVersion: v${FLINK_VERSION/./_}#" "$1" > "$out"
   if [ "${FLINK_VERSION%%.*}" = 1 ]; then
     sed -i.bak -e 's#execution.checkpointing.savepoint-dir#state.savepoints.dir#' -e 's#execution.checkpointing.dir#state.checkpoints.dir#' "$out" && rm -f "$out.bak"
   fi
@@ -44,8 +44,13 @@ wait_for '{.status.lifecycleState}' SUSPENDED 180
 k -n $ns exec deploy/kafka -- sh -c 'echo hello | /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server localhost:9092 --topic e2e-in'
 wait_for '{.spec.job.state}' running 180
 wait_for '{.status.jobStatus.state}' RUNNING 300
-# Count our own events only: the operator emits "Suspended" too, with a different message.
-ours() { events | grep -cE "^$1 +(no input|input observed|job FAILED)"; }
+# Count our own events only: the operator emits "Suspended" too, with a different message. The
+# events API folds an identical event within six minutes into a series, so sum the series counts.
+ours() { local uid; uid=$(k -n $ns get flinkdeployment example -o jsonpath='{.metadata.uid}'); k -n $ns get events --field-selector involvedObject.uid=$uid -o json | python3 -c '
+import sys, json, re
+r = sys.argv[1]
+print(sum((e.get("series") or {}).get("count") or e.get("count") or 1 for e in json.load(sys.stdin)["items"]
+          if e["reason"] == r and re.match(r"(no input|input observed|job FAILED)", e.get("message", ""))))' "$1"; }
 [ "$(ours Suspended)" = 1 ] && [ "$(ours Resumed)" = 1 ] \
   || { echo "failover must not double-act:"; events | grep -E '^(Suspended|Resumed)'; exit 1; }
 
