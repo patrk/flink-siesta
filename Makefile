@@ -48,9 +48,12 @@ e2e-job:
 	bash e2e/job/build.sh $(FLINK_VERSION)
 	kind load docker-image siesta-e2e-job:$(FLINK_VERSION) --name siesta
 
+# All scenarios in their own namespaces, E2E_PARALLEL at a time (1 = in series, more on a big
+# machine; a scenario needs about 3 GB), or one in the foreground: make e2e E2E_SCENARIO=job-graph
+E2E_PARALLEL ?= 2
 e2e: image e2e-job
 	kind load docker-image $(IMAGE) --name siesta
-	IMAGE_REPO=siesta IMAGE_TAG=e2e KUBE_CONTEXT=$(KUBE_CONTEXT) FLINK_VERSION=$(FLINK_VERSION) bash e2e/run.sh
+	IMAGE_REPO=siesta IMAGE_TAG=e2e KUBE_CONTEXT=$(KUBE_CONTEXT) FLINK_VERSION=$(FLINK_VERSION) E2E_SCENARIO="$(E2E_SCENARIO)" E2E_PARALLEL=$(E2E_PARALLEL) bash e2e/run.sh
 
 kind-down: ; kind delete cluster --name siesta
 

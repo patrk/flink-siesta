@@ -26,8 +26,15 @@ jobs:
   e2e:
     runs-on: ubuntu-latest
     needs: [test]
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [suspend-resume, job-graph, outage, admission-gc, restart-budget]
+    name: e2e ${{ matrix.scenario }}
     steps:
       - uses: actions/checkout@v7
       - uses: helm/kind-action@v1.15.0
         with: { cluster_name: siesta, config: e2e/kind.yaml }
       - run: make kind-deps e2e
+        env:
+          E2E_SCENARIO: ${{ matrix.scenario }}

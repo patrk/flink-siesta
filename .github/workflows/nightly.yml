@@ -14,7 +14,8 @@ jobs:
       matrix:
         operator: ["1.13.0", "1.14.0", "1.15.0"]
         flink: ["1.20", "2.0", "2.2"]
-    name: e2e operator ${{ matrix.operator }} flink ${{ matrix.flink }}
+        scenario: [suspend-resume, job-graph, outage, admission-gc, restart-budget]
+    name: e2e ${{ matrix.scenario }} operator ${{ matrix.operator }} flink ${{ matrix.flink }}
     steps:
       - uses: actions/checkout@v7
       - uses: helm/kind-action@v1.15.0
@@ -23,6 +24,7 @@ jobs:
         env:
           FLINK_OPERATOR_VERSION: ${{ matrix.operator }}
           FLINK_VERSION: ${{ matrix.flink }}
+          E2E_SCENARIO: ${{ matrix.scenario }}
 
   bench:
     runs-on: ubuntu-latest
