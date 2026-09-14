@@ -52,6 +52,12 @@ func (s Store) Load(ctx context.Context, fd *unstructured.Unstructured) (state.S
 }
 
 // Save writes the state, creating the ConfigMap on first use. Unchanged data is not written.
+// Delete removes the deployment's memory. Not found is fine.
+func (s Store) Delete(ctx context.Context, fd *unstructured.Unstructured) error {
+	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: fd.GetNamespace(), Name: Name(fd.GetName())}}
+	return client.IgnoreNotFound(s.Client.Delete(ctx, cm))
+}
+
 func (s Store) Save(ctx context.Context, fd *unstructured.Unstructured, st state.State) error {
 	data := st.Data()
 	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: fd.GetNamespace(), Name: Name(fd.GetName())}}

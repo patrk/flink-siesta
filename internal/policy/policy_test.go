@@ -21,6 +21,7 @@ func TestReadReportsProblemsInsteadOfDefaultingSilently(t *testing.T) {
 		{"bad mode", map[string]string{p + "/mode": "maybe", p + "/sources": "t"}, true, 1, 14 * 24 * time.Hour},
 		{"idle from the job", map[string]string{p + "/mode": "auto", p + "/sources": "t", p + "/idle": "job"}, true, 0, 14 * 24 * time.Hour},
 		{"bad idle", map[string]string{p + "/mode": "auto", p + "/sources": "t", p + "/idle": "broker"}, true, 1, 14 * 24 * time.Hour},
+		{"bootstrap-servers is reserved", map[string]string{p + "/mode": "auto", p + "/sources": "t", p + "/bootstrap-servers": "b:9092"}, true, 1, 14 * 24 * time.Hour},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

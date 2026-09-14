@@ -3,9 +3,10 @@ package controller
 import (
 	"context"
 	"encoding/json"
-	"time"
+	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -16,6 +17,7 @@ import (
 
 type patcher struct {
 	client.Client
+	Reader   client.Reader // uncached, for the fresh read after a conflict
 	Prefix   string
 	Recorder recorder.EventRecorder
 }
@@ -32,8 +34,10 @@ func (p patcher) resume(ctx context.Context, fd *unstructured.Unstructured, s st
 	return err
 }
 
-func (p patcher) restart(ctx context.Context, fd *unstructured.Unstructured, s state.State, reason string, now time.Time) error {
-	err := p.merge(ctx, fd, s, map[string]any{"restartNonce": now.UnixMilli()})
+// restart writes the nonce the decider recorded in the budget, so memory and object agree on
+// which restart the budget has counted, even if the save after this patch is lost.
+func (p patcher) restart(ctx context.Context, fd *unstructured.Unstructured, s state.State, reason string) error {
+	err := p.merge(ctx, fd, s, map[string]any{"restartNonce": s.Restarts.LastNonce})
 	p.event(fd, err, "Restarted", reason)
 	return err
 }
@@ -54,6 +58,11 @@ func (p patcher) markUnrecoverable(ctx context.Context, fd *unstructured.Unstruc
 		p.Recorder.Eventf(fd, nil, corev1.EventTypeWarning, "Unrecoverable", "MarkUnrecoverable", "%s", reason)
 	}
 	return err
+}
+
+// clear removes our annotations from an object that is no longer ours.
+func (p patcher) clear(ctx context.Context, fd *unstructured.Unstructured) error {
+	return p.merge(ctx, fd, state.State{}, nil)
 }
 
 func (p patcher) annotate(ctx context.Context, fd *unstructured.Unstructured, s state.State) error {
@@ -81,7 +90,9 @@ func (p patcher) merge(ctx context.Context, fd *unstructured.Unstructured, s sta
 			ann[k] = v
 		}
 	}
-	body := map[string]any{"metadata": map[string]any{"annotations": ann}}
+	// The resourceVersion makes the merge patch conditional: a human edit between our cached
+	// read and this write is a conflict, retried on the next tick against the new object.
+	body := map[string]any{"metadata": map[string]any{"annotations": ann, "resourceVersion": fd.GetResourceVersion()}}
 	if spec != nil {
 		body["spec"] = spec
 	}
@@ -90,7 +101,27 @@ func (p patcher) merge(ctx context.Context, fd *unstructured.Unstructured, s sta
 		return err
 	}
 	// A named field manager lets GitOps tools ignore what we own by manager, not by path.
-	return p.Patch(ctx, fd, client.RawPatch(types.MergePatchType, raw), client.FieldOwner("siesta"))
+	err = p.Patch(ctx, fd, client.RawPatch(types.MergePatchType, raw), client.FieldOwner("siesta"))
+	if !apierrors.IsConflict(err) || p.Reader == nil {
+		return err
+	}
+	// The operator writes status every few seconds, so the cached resourceVersion is often
+	// behind. Read the object fresh and retry once, unless the one field we are about to set was
+	// changed by someone else in the meantime: that edit wins, and the next tick sees it.
+	fresh := fd.DeepCopy()
+	if err := p.Reader.Get(ctx, client.ObjectKeyFromObject(fd), fresh); err != nil {
+		return err
+	}
+	was, _, _ := unstructured.NestedString(fd.Object, "spec", "job", "state")
+	is, _, _ := unstructured.NestedString(fresh.Object, "spec", "job", "state")
+	if spec != nil && was != is {
+		return fmt.Errorf("spec.job.state changed from %q to %q while deciding: %w", was, is, err)
+	}
+	body["metadata"].(map[string]any)["resourceVersion"] = fresh.GetResourceVersion()
+	if raw, err = json.Marshal(body); err != nil {
+		return err
+	}
+	return p.Patch(ctx, fresh, client.RawPatch(types.MergePatchType, raw), client.FieldOwner("siesta"))
 }
 
 func (p patcher) event(fd *unstructured.Unstructured, err error, action, note string) {

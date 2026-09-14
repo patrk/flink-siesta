@@ -9,6 +9,9 @@ type RestartBudget struct {
 	Count       int       `json:"count"`
 	WindowStart time.Time `json:"windowStart,omitzero"`
 	NextAfter   time.Time `json:"nextAfter,omitzero"`
+	// LastNonce is the spec.restartNonce this budget accounts for. A newer nonce on the object
+	// is a restart the budget has not counted yet.
+	LastNonce int64 `json:"lastNonce,omitempty"`
 }
 
 // Exhausted: the budget for this window is used up. That is terminal; a human must look.
@@ -34,13 +37,13 @@ func (b RestartBudget) Consume(now time.Time, window, base time.Duration, multip
 		start = now
 	}
 	backoff := time.Duration(float64(base) * math.Pow(multiplier, float64(b.Count)))
-	return RestartBudget{Count: b.Count + 1, WindowStart: start, NextAfter: now.Add(backoff)}
+	return RestartBudget{Count: b.Count + 1, WindowStart: start, NextAfter: now.Add(backoff), LastNonce: b.LastNonce}
 }
 
 // rolled: a budget older than the window is a fresh budget.
 func (b RestartBudget) rolled(now time.Time, window time.Duration) RestartBudget {
 	if b.WindowStart.IsZero() || now.After(b.WindowStart.Add(window)) {
-		return RestartBudget{}
+		return RestartBudget{LastNonce: b.LastNonce}
 	}
 	return b
 }

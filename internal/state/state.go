@@ -1,4 +1,4 @@
-// Package state is everything the controller remembers, persisted as annotations.
+// Package state is everything the controller remembers, persisted in a ConfigMap (ADR 10).
 package state
 
 import (
@@ -41,6 +41,7 @@ type Outage struct {
 type Reported struct {
 	SuspendChecked bool   // the operator completed our suspend and we checked for a savepoint
 	ResumeStalled  bool   // ResumeStalled was raised for the current resume
+	SuspendStalled bool   // SuspendStalled was raised for the current suspend
 	SourcesChecked string // job id whose graph the sources annotation was last checked against
 }
 
@@ -65,11 +66,11 @@ func Read(prefix string, ann map[string]string) (State, bool) {
 			return State{}, false
 		}
 	}
-	s.LastActivityAt = parseTime(ann[prefix+"/last-activity-at"])
-	s.SuspendedAt = parseTime(ann[prefix+"/suspended-at"])
-	s.AwakeSince = parseTime(ann[prefix+"/awake-since"])
+	s.LastActivityAt, _ = parseTime(ann[prefix+"/last-activity-at"])
+	s.SuspendedAt, _ = parseTime(ann[prefix+"/suspended-at"])
+	s.AwakeSince, _ = parseTime(ann[prefix+"/awake-since"])
 	s.Generation, _ = strconv.ParseInt(ann[prefix+"/generation"], 10, 64)
-	s.ResumedAt = parseTime(ann[prefix+"/resumed-at"])
+	s.ResumedAt, _ = parseTime(ann[prefix+"/resumed-at"])
 	return s, true
 }
 
@@ -78,7 +79,7 @@ func Read(prefix string, ann map[string]string) (State, bool) {
 // versions wrote on the object are set to "" so a merge patch removes them.
 func (s State) Annotations(prefix string) map[string]string {
 	return map[string]string{
-		prefix + "/state":   string(s.Phase),
+		prefix + "/state":   string(s.Phase), // "" for the zero State: the key is removed
 		prefix + "/reason":  s.Reason,
 		prefix + "/offsets": "", prefix + "/restarts": "", prefix + "/last-activity-at": "",
 		prefix + "/suspended-at": "", prefix + "/awake-since": "", prefix + "/generation": "", prefix + "/resumed-at": "",
@@ -104,6 +105,7 @@ func (s State) Data() map[string]string {
 		"source-down-since": formatTime(s.Outage.Since),
 		"suspend-checked":   strconv.FormatBool(s.Reported.SuspendChecked),
 		"resume-stalled":    strconv.FormatBool(s.Reported.ResumeStalled),
+		"suspend-stalled":   strconv.FormatBool(s.Reported.SuspendStalled),
 		"sources-checked":   s.Reported.SourcesChecked,
 	}
 }
@@ -125,23 +127,35 @@ func FromData(d map[string]string) (State, bool) {
 			return State{}, false
 		}
 	}
-	s.LastActivityAt = parseTime(d["last-activity-at"])
-	s.SuspendedAt = parseTime(d["suspended-at"])
-	s.AwakeSince = parseTime(d["awake-since"])
-	s.ResumedAt = parseTime(d["resumed-at"])
+	// A timestamp that does not parse is memory we cannot trust. Zero time would read as "idle
+	// for ages" and suspend on the spot; unknown never acts applies to our own memory too.
+	var ok bool
+	for _, f := range []struct {
+		key string
+		dst *time.Time
+	}{{"last-activity-at", &s.LastActivityAt}, {"suspended-at", &s.SuspendedAt}, {"awake-since", &s.AwakeSince},
+		{"resumed-at", &s.ResumedAt}, {"source-down-since", &s.Outage.Since}} {
+		if *f.dst, ok = parseTime(d[f.key]); !ok {
+			return State{}, false
+		}
+	}
 	s.Generation, _ = strconv.ParseInt(d["generation"], 10, 64)
 	s.Pending, _ = strconv.ParseInt(d["pending"], 10, 64)
 	s.Outage.Down, _ = strconv.ParseBool(d["source-down"])
-	s.Outage.Since = parseTime(d["source-down-since"])
 	s.Reported.SuspendChecked, _ = strconv.ParseBool(d["suspend-checked"])
 	s.Reported.ResumeStalled, _ = strconv.ParseBool(d["resume-stalled"])
+	s.Reported.SuspendStalled, _ = strconv.ParseBool(d["suspend-stalled"])
 	s.Reported.SourcesChecked = d["sources-checked"]
 	return s, true
 }
 
-func parseTime(s string) time.Time {
-	t, _ := time.Parse(time.RFC3339, s)
-	return t
+// parseTime reads an RFC 3339 time; the empty string is the zero time and is fine.
+func parseTime(s string) (time.Time, bool) {
+	if s == "" {
+		return time.Time{}, true
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	return t, err == nil
 }
 
 func formatTime(t time.Time) string {

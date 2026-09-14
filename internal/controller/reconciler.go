@@ -15,6 +15,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/recorder"
 
@@ -32,8 +33,8 @@ const (
 	defaultProbeTimeout = 10 * time.Second
 )
 
-// JobProbe reads from the running job's own REST API: the topics its Kafka sources consume
-// and the records they have not fetched yet. nil switches both uses off.
+// JobProbe reads from the running job's own REST API: the topics its Kafka sources consume,
+// the offsets they have emitted and how long they have been idle. nil switches both uses off.
 type JobProbe interface {
 	Sources(ctx context.Context, namespace, name, jobID string) (flink.Sources, error)
 	Read(ctx context.Context, namespace, name, jobID string, src flink.Sources) (flink.Reading, error)
@@ -80,11 +81,18 @@ func (r *Reconciler) probeTimeout() time.Duration {
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Only objects that carry <prefix>/mode reach Reconcile
-	hasPolicy := predicate.NewPredicateFuncs(func(o client.Object) bool {
+	// Only objects that carry <prefix>/mode reach Reconcile, plus the one update that removes
+	// it, so the state annotation and the ConfigMap can be cleared instead of going stale.
+	ours := func(o client.Object) bool {
 		_, ok := o.GetAnnotations()[r.Prefix+"/mode"]
 		return ok
-	})
+	}
+	hasPolicy := predicate.Funcs{
+		CreateFunc:  func(e event.CreateEvent) bool { return ours(e.Object) },
+		DeleteFunc:  func(e event.DeleteEvent) bool { return ours(e.Object) },
+		GenericFunc: func(e event.GenericEvent) bool { return ours(e.Object) },
+		UpdateFunc:  func(e event.UpdateEvent) bool { return ours(e.ObjectNew) || ours(e.ObjectOld) },
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("siesta").
 		For(flink.New(), builder.WithPredicates(hasPolicy, relevantChange(r.Prefix))).
@@ -104,17 +112,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	pol, ours := policy.Read(r.Prefix, fd.GetAnnotations())
 	if !ours {
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, r.release(ctx, req, fd)
 	}
 	now := r.Now()
-	prev, seen, err := r.load(ctx, fd, now)
+	live := flink.Live(fd)
+	prev, seen, err := r.load(ctx, fd, live, now)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if len(pol.Problems) > 0 {
 		return r.refuseInvalidPolicy(ctx, fd, pol, prev)
 	}
-	live := flink.Live(fd)
 	obs := r.observe(ctx, req, fd, pol, &prev, live)
 	d := r.Decider.Decide(pol, prev, live, obs, now)
 	ctrl.LoggerFrom(ctx).Info("decided", gateTrace(pol, prev, live, obs, d, now)...)
@@ -128,7 +136,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		metrics.SetWouldAct(req.Namespace, req.Name, would)
 	}
 	r.record(req, fd, prev, d, now)
-	return r.act(ctx, fd, prev, seen, d, now)
+	return r.act(ctx, fd, prev, seen, d)
 }
 
 // forget drops everything this process holds for a deleted deployment.
@@ -181,16 +189,40 @@ func (m *memo) forget(key string) {
 }
 
 // load reads memory and reconciles it with the object (ADR 10). A deployment never seen before
-// starts active, now.
-func (r *Reconciler) load(ctx context.Context, fd *unstructured.Unstructured, now time.Time) (prev state.State, seen bool, err error) {
+// starts active, now, and takes the object's current restartNonce as its baseline: a nonce
+// that was there before us is not a restart to count.
+func (r *Reconciler) load(ctx context.Context, fd *unstructured.Unstructured, live decide.Live, now time.Time) (prev state.State, seen bool, err error) {
 	prev, seen, err = r.Store.Load(ctx, fd)
 	if err != nil {
 		return state.State{}, false, err
 	}
 	if !seen {
 		prev = state.Initial(now)
+		prev.Restarts.LastNonce = live.RestartNonce
 	}
-	return repair(prev, fd.GetAnnotations()[r.Prefix+"/state"], now), seen, nil
+	ann := fd.GetAnnotations()
+	return repair(prev, ann[r.Prefix+"/state"], ann[r.Prefix+"/reason"], now), seen, nil
+}
+
+// release is the exit for a deployment that stopped being ours: someone removed the policy.
+// Our two annotations and the ConfigMap go with it, so nothing stale is left to mislead.
+func (r *Reconciler) release(ctx context.Context, req ctrl.Request, fd *unstructured.Unstructured) error {
+	if _, marked := fd.GetAnnotations()[r.Prefix+"/state"]; !marked {
+		return nil
+	}
+	if err := r.patcher().clear(ctx, fd); err != nil {
+		return err
+	}
+	if err := r.Store.Delete(ctx, fd); err != nil {
+		return err
+	}
+	r.forget(req)
+	r.event(fd, corev1.EventTypeNormal, "Released", "Release", "policy removed; state and memory cleared")
+	return nil
+}
+
+func (r *Reconciler) patcher() patcher {
+	return patcher{Client: r.Client, Reader: r.Store.Reader, Prefix: r.Prefix, Recorder: r.Recorder}
 }
 
 // refuseInvalidPolicy handles a deployment that is ours but not usable: say why, once, and do
@@ -201,11 +233,12 @@ func (r *Reconciler) refuseInvalidPolicy(ctx context.Context, fd *unstructured.U
 		r.event(fd, corev1.EventTypeWarning, "InvalidPolicy", "Validate", reason)
 		next := prev
 		next.Reason = reason
-		if err := r.Store.Save(ctx, fd, next); err != nil {
+		// Object first, memory second, like every other write: if the second fails, the next
+		// tick sees the object's reason and does not repeat the event.
+		if err := r.patcher().annotate(ctx, fd, next); err != nil {
 			return ctrl.Result{}, err
 		}
-		p := patcher{Client: r.Client, Prefix: r.Prefix, Recorder: r.Recorder}
-		if err := p.annotate(ctx, fd, next); err != nil {
+		if err := r.Store.Save(ctx, fd, next); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -287,6 +320,17 @@ func (r *Reconciler) report(fd *unstructured.Unstructured, pol policy.Policy, pr
 	if d.Next.ResumedAt.IsZero() {
 		d.Next.Reported.ResumeStalled = false
 	}
+
+	// The mirror image: a suspend the operator has not completed within the stall window. A
+	// savepoint that cannot be written, or an operator that is not running, looks like this.
+	suspending := d.Next.Phase == state.Suspended && live.LifecycleState != "SUSPENDED"
+	if suspending && !d.Next.Reported.SuspendStalled && now.Sub(d.Next.SuspendedAt) > r.stallAfter() {
+		d.Next.Reported.SuspendStalled = true
+		r.event(fd, corev1.EventTypeWarning, "SuspendStalled", "Suspend", "operator has not completed the suspend "+r.stallAfter().String()+" after it was requested; check the operator and the savepoint")
+	}
+	if !suspending {
+		d.Next.Reported.SuspendStalled = false
+	}
 	return d
 }
 
@@ -295,7 +339,7 @@ func (r *Reconciler) record(req ctrl.Request, fd *unstructured.Unstructured, pre
 	metrics.SetState(req.Namespace, req.Name, string(d.Next.Phase))
 	metrics.SetHeld(req.Namespace, req.Name, d.Held)
 	r.account(req, fd, prev, d.Next, now)
-	if d.Action != decide.None {
+	if acted(prev, d) {
 		metrics.Transitions.WithLabelValues(req.Namespace, req.Name, d.Action.String()).Inc()
 	}
 	if d.ResumedAfter > 0 {
@@ -306,9 +350,9 @@ func (r *Reconciler) record(req ctrl.Request, fd *unstructured.Unstructured, pre
 // act writes the decision: the object first, spec and state annotation in one patch, memory
 // second. If the second write fails, the next tick repairs memory from the object's annotation
 // (ADR 5, ADR 10). Nothing is written when nothing a human could see has changed.
-func (r *Reconciler) act(ctx context.Context, fd *unstructured.Unstructured, prev state.State, seen bool, d decide.Decision, now time.Time) (ctrl.Result, error) {
-	humanVisible := !seen || d.Action != decide.None || prev.Phase != d.Next.Phase || prev.Reason != d.Next.Reason
-	p := patcher{Client: r.Client, Prefix: r.Prefix, Recorder: r.Recorder}
+func (r *Reconciler) act(ctx context.Context, fd *unstructured.Unstructured, prev state.State, seen bool, d decide.Decision) (ctrl.Result, error) {
+	humanVisible := !seen || acted(prev, d) || prev.Phase != d.Next.Phase || prev.Reason != d.Next.Reason
+	p := r.patcher()
 	var err error
 	switch {
 	case !humanVisible:
@@ -318,7 +362,7 @@ func (r *Reconciler) act(ctx context.Context, fd *unstructured.Unstructured, pre
 	case d.Action == decide.Resume:
 		err = p.resume(ctx, fd, d.Next, d.Reason)
 	case d.Action == decide.Restart:
-		err = p.restart(ctx, fd, d.Next, d.Reason, now)
+		err = p.restart(ctx, fd, d.Next, d.Reason)
 	case d.Action == decide.Refuse:
 		err = p.refuse(ctx, fd, d.Next, d.Reason)
 	case d.Action == decide.MarkUnrecoverable:
@@ -330,9 +374,23 @@ func (r *Reconciler) act(ctx context.Context, fd *unstructured.Unstructured, pre
 		return ctrl.Result{}, err // controller-runtime retries with backoff
 	}
 	if err := r.Store.Save(ctx, fd, d.Next); err != nil {
+		r.event(fd, corev1.EventTypeWarning, "SaveFailed", "Save", "could not write the controller's memory: "+err.Error())
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: r.requeue()}, nil
+}
+
+// acted says whether this decision does something to the object. A refusal is an action the
+// first time and a standing fact afterwards: repeating it every tick would be an event and a
+// transition per minute for a job that simply cannot sleep.
+func acted(prev state.State, d decide.Decision) bool {
+	if d.Action == decide.None {
+		return false
+	}
+	if d.Action == decide.Refuse && prev.Reason == d.Next.Reason {
+		return false
+	}
+	return true
 }
 
 type cachedJob struct {
@@ -384,8 +442,8 @@ func jobGate(sources []string, snapshot map[string]string, reading flink.Reading
 		}
 		for p, raw := range ends {
 			end, err := strconv.ParseInt(raw, 10, 64)
-			if err != nil {
-				return decide.JobUnknown, "unreadable end offset for " + topic
+			if err != nil || end < 0 {
+				return decide.JobUnknown, fmt.Sprintf("no end offset for %s partition %d", topic, p)
 			}
 			emitted, has := cur[p]
 			switch {
@@ -503,12 +561,15 @@ func (r *Reconciler) account(req ctrl.Request, fd *unstructured.Unstructured, pr
 // in the same patch as spec.job.state, so if the two stores disagree, the object is the truth:
 // a suspend or resume whose memory write failed is recovered instead of being mistaken for a
 // manual change.
-func repair(prev state.State, objectState string, now time.Time) state.State {
+func repair(prev state.State, objectState, objectReason string, now time.Time) state.State {
 	switch {
 	case objectState == string(state.Suspended) && prev.Phase == state.Active:
 		prev.Phase, prev.SuspendedAt, prev.Reason = state.Suspended, now, "memory repaired from object"
 	case objectState == string(state.Active) && prev.Phase == state.Suspended:
 		prev.Phase, prev.SuspendedAt, prev.AwakeSince, prev.ResumedAt, prev.Reason = state.Active, time.Time{}, now, now, "memory repaired from object"
+	case objectState == string(state.Unrecoverable) && prev.Phase != state.Unrecoverable:
+		// The mark reached the object but not memory. The object's reason is the one a human read.
+		prev.Phase, prev.Reason = state.Unrecoverable, objectReason
 	}
 	return prev
 }

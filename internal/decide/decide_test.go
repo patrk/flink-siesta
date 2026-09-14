@@ -240,6 +240,27 @@ func TestLagReasonsReachTheObject(t *testing.T) {
 	}
 }
 
+// A restartNonce on the object that memory has not accounted for is a restart that happened
+// without being counted: ours, lost between the patch and the save, or a human's. It consumes a
+// slot and starts a backoff, so a retry after a lost write cannot restart again for free.
+func TestAMissedRestartIsCounted(t *testing.T) {
+	d := New(rp)
+	prev := withSnap(state.Initial(t0), snap("1"))
+	prev.Restarts.LastNonce = 5
+	failed := Live{SpecJobState: "running", UpgradeMode: "savepoint", JobState: "FAILED", LifecycleState: "STABLE", RestartNonce: 9}
+	got := d.Decide(auto, prev, failed, seen(snap("1")), t0.Add(time.Minute))
+	if got.Action != None || got.Next.Restarts.Count != 1 || got.Next.Restarts.LastNonce != 9 {
+		t.Fatalf("want the missed restart counted and a backoff, got %s count=%d nonce=%d reason=%q", got.Action, got.Next.Restarts.Count, got.Next.Restarts.LastNonce, got.Reason)
+	}
+	// Our own restart records the nonce the patch will carry, so the next tick sees no gap.
+	prev.Restarts.LastNonce = 9
+	failed.RestartNonce = 9
+	got = d.Decide(auto, prev, failed, seen(snap("1")), t0.Add(time.Minute))
+	if got.Action != Restart || got.Next.Restarts.LastNonce != t0.Add(time.Minute).UnixMilli() {
+		t.Fatalf("want a restart carrying its nonce, got %s nonce=%d", got.Action, got.Next.Restarts.LastNonce)
+	}
+}
+
 // Held names the gate that keeps an idle job awake, so the aggregate is one gauge away.
 func TestHeldNamesTheBlockingGate(t *testing.T) {
 	d := New(rp)

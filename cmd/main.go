@@ -60,7 +60,7 @@ func parseFlags() config {
 	flag.DurationVar(&c.restartWindow, "restart-window", 30*time.Minute, "restart budget window")
 	flag.DurationVar(&c.restartBackoff, "restart-backoff", time.Minute, "first restart backoff; doubles each time within the window")
 	flag.DurationVar(&c.pollInterval, "poll-interval", time.Minute, "how often each deployment is revisited")
-	flag.DurationVar(&c.probeTimeout, "probe-timeout", 10*time.Second, "bound for one call to the source")
+	flag.DurationVar(&c.probeTimeout, "probe-timeout", 10*time.Second, "bound for the probes of one tick: offsets, lag and the job's REST API together")
 	flag.DurationVar(&c.stallAfter, "resume-stall-after", 10*time.Minute, "warn once if a resumed job is not RUNNING after this")
 	flag.DurationVar(&c.failingAfter, "failing-after", 10*time.Minute, "RESTARTING longer than this counts as failing")
 	flag.BoolVar(&c.flinkRest, "flink-rest", true, "ask the running job's REST API to verify sources and, with idle: job, whether it objects to sleeping")

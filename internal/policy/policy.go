@@ -64,6 +64,11 @@ func Read(prefix string, ann map[string]string) (Policy, bool) {
 	if len(p.Sources) == 0 {
 		p.Problems = append(p.Problems, prefix+"/sources is required: comma-separated topic names")
 	}
+	// Reserved for a per-deployment Kafka cluster. The name is part of the contract already, so
+	// that adding it later is not a breaking change; until then it is refused, not ignored.
+	if _, has := ann[prefix+"/bootstrap-servers"]; has {
+		p.Problems = append(p.Problems, prefix+"/bootstrap-servers is reserved and not implemented yet; the controller's Kafka cluster is set at install time")
+	}
 	return p, true
 }
 

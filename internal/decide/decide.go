@@ -17,6 +17,7 @@ type Live struct {
 	// restart mechanisms would fight, so ours steps back and says so.
 	OperatorRestarts bool
 	Generation       int64  // metadata.generation; a change means someone edited the spec
+	RestartNonce     int64  // spec.restartNonce; newer than memory means a restart memory did not record
 	JobID            string // status.jobStatus.jobId; changes on every start, so it keys "once per job instance"
 	JobState         string // Flink JobStatus: RUNNING, FAILED, RESTARTING, FINISHED, ...
 	LifecycleState   string // operator: CREATED, SUSPENDED, UPGRADING, DEPLOYED, STABLE, ROLLING_BACK, ROLLED_BACK, FAILED
@@ -115,7 +116,9 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, obs Obser
 	if live.operatorBusy() {
 		return Decision{Action: None, Next: prev, Reason: reasonOperatorBusy(live.LifecycleState)}
 	}
-	if p.Mode == policy.ModeOff && prev.Phase == state.Suspended {
+	// Mode off resumes what we suspended, once the operator has finished suspending it. A spec
+	// that already says running was resumed by someone else and is handled as such below.
+	if p.Mode == policy.ModeOff && prev.Phase == state.Suspended && live.SpecJobState == "suspended" {
 		if !live.suspended() {
 			return Decision{Action: None, Next: prev, Reason: ReasonOperatorSuspends}
 		}
@@ -177,6 +180,13 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, obs Obser
 			resumedAfter = now.Sub(cur.ResumedAt)
 			cur.ResumedAt = time.Time{}
 		}
+		if live.RestartNonce > cur.Restarts.LastNonce {
+			// A restart memory never recorded: ours, lost between the patch and the save, or a
+			// human's. Either way it consumed a slot, and the budget is only a limit if it counts.
+			cur.Restarts = cur.Restarts.Consume(now, d.restart.Window, d.restart.BaseBackoff, d.restart.Multiplier)
+			cur.Restarts.LastNonce = live.RestartNonce
+			cur.AwakeSince = now
+		}
 		if r := d.unrecoverable(live); r != "" {
 			cur.Phase, cur.Reason = state.Unrecoverable, r
 			return Decision{Action: MarkUnrecoverable, Next: cur, Reason: r}
@@ -195,6 +205,7 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, obs Obser
 				return Decision{Action: MarkUnrecoverable, Next: cur, Reason: cur.Reason}
 			default:
 				cur.Restarts = cur.Restarts.Consume(now, d.restart.Window, d.restart.BaseBackoff, d.restart.Multiplier)
+				cur.Restarts.LastNonce = now.UnixMilli() // the nonce the patch will carry
 				cur.AwakeSince = now
 				cur.Reason = reasonRestart(cur.Restarts.Count)
 				return Decision{Action: Restart, Next: cur, Reason: reasonRestarting(live.JobState, cur.Restarts.Count)}

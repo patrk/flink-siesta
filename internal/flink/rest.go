@@ -13,8 +13,8 @@ import (
 	"time"
 )
 
-// REST reads what only the running job knows: which Kafka topics its sources consume and how
-// many records they have not fetched yet. The operator exposes every JobManager as a Service
+// REST reads what only the running job knows: which Kafka topics its sources consume, the
+// last offset each reader emitted and how long the sources have been idle. The operator exposes every JobManager as a Service
 // named <deployment>-rest on the rest port, so no discovery is needed.
 type REST struct {
 	HTTP *http.Client

@@ -37,12 +37,14 @@ func Live(u *unstructured.Unstructured) decide.Live {
 	}
 	savepoint, _, _ := unstructured.NestedString(u.Object, "status", "jobStatus", "upgradeSavepointPath")
 	healthCheck, _, _ := unstructured.NestedString(u.Object, "spec", "flinkConfiguration", "kubernetes.operator.cluster.health-check.enabled")
+	nonce, _, _ := unstructured.NestedInt64(u.Object, "spec", "restartNonce")
 	return decide.Live{
 		SpecJobState:     specState,
 		UpgradeMode:      upgradeMode,
 		SavepointPath:    savepoint,
 		OperatorRestarts: healthCheck == "true",
 		Generation:       u.GetGeneration(),
+		RestartNonce:     nonce,
 		JobID:            jobID,
 		JobState:         jobState,
 		LifecycleState:   lifecycle,
