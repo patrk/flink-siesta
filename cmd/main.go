@@ -130,6 +130,7 @@ func run() error {
 			Unrecoverable: strings.Split(cfg.unrecoverable, ","),
 		}),
 	}
+	r.Decider.Quiet = cfg.pollInterval
 	if cfg.flinkRest {
 		r.Flink = flink.NewREST(cfg.flinkRestPort)
 	}

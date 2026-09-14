@@ -4,6 +4,7 @@ package state
 import (
 	"encoding/json"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -26,6 +27,7 @@ type State struct {
 	Generation     int64     // metadata.generation last seen; a newer one clears unrecoverable
 	ResumedAt      time.Time // set when we resume; cleared, and the latency reported, once the job is RUNNING
 	Pending        int64     // records the consumer group has not consumed, last time we could tell
+	Sources        []string  // with sources: auto, the topics learned from the job, the wake signal while it sleeps
 	Outage         Outage    // the source could not be asked last tick, and since when
 	Reported       Reported  // what has already been said about the current situation
 }
@@ -49,40 +51,12 @@ func Initial(now time.Time) State {
 	return State{Phase: Active, Snapshot: map[string]string{}, LastActivityAt: now, AwakeSince: now, Reason: "first observation"}
 }
 
-// Read returns ok=false when there is no state yet, or it is unreadable (treated as never seen).
-func Read(prefix string, ann map[string]string) (State, bool) {
-	phase, has := ann[prefix+"/state"]
-	if !has {
-		return State{}, false
-	}
-	s := State{Phase: Phase(phase), Snapshot: map[string]string{}, Reason: ann[prefix+"/reason"]}
-	if v := ann[prefix+"/offsets"]; v != "" {
-		if err := json.Unmarshal([]byte(v), &s.Snapshot); err != nil {
-			return State{}, false
-		}
-	}
-	if v := ann[prefix+"/restarts"]; v != "" {
-		if err := json.Unmarshal([]byte(v), &s.Restarts); err != nil {
-			return State{}, false
-		}
-	}
-	s.LastActivityAt, _ = parseTime(ann[prefix+"/last-activity-at"])
-	s.SuspendedAt, _ = parseTime(ann[prefix+"/suspended-at"])
-	s.AwakeSince, _ = parseTime(ann[prefix+"/awake-since"])
-	s.Generation, _ = strconv.ParseInt(ann[prefix+"/generation"], 10, 64)
-	s.ResumedAt, _ = parseTime(ann[prefix+"/resumed-at"])
-	return s, true
-}
-
 // Annotations is what goes on the FlinkDeployment itself: only what a human wants to see in
-// kubectl describe. Everything else lives in the ConfigMap, see Data. Keys that earlier
-// versions wrote on the object are set to "" so a merge patch removes them.
+// kubectl describe. Everything else lives in the ConfigMap, see Data.
 func (s State) Annotations(prefix string) map[string]string {
 	return map[string]string{
-		prefix + "/state":   string(s.Phase), // "" for the zero State: the key is removed
-		prefix + "/reason":  s.Reason,
-		prefix + "/offsets": "", prefix + "/restarts": "", prefix + "/last-activity-at": "",
-		prefix + "/suspended-at": "", prefix + "/awake-since": "", prefix + "/generation": "", prefix + "/resumed-at": "",
+		prefix + "/state":  string(s.Phase), // "" for the zero State: the key is removed
+		prefix + "/reason": s.Reason,
 	}
 }
 
@@ -107,6 +81,7 @@ func (s State) Data() map[string]string {
 		"resume-stalled":    strconv.FormatBool(s.Reported.ResumeStalled),
 		"suspend-stalled":   strconv.FormatBool(s.Reported.SuspendStalled),
 		"sources-checked":   s.Reported.SourcesChecked,
+		"sources":           strings.Join(s.Sources, ","),
 	}
 }
 
@@ -146,6 +121,11 @@ func FromData(d map[string]string) (State, bool) {
 	s.Reported.ResumeStalled, _ = strconv.ParseBool(d["resume-stalled"])
 	s.Reported.SuspendStalled, _ = strconv.ParseBool(d["suspend-stalled"])
 	s.Reported.SourcesChecked = d["sources-checked"]
+	for _, t := range strings.Split(d["sources"], ",") {
+		if t != "" {
+			s.Sources = append(s.Sources, t)
+		}
+	}
 	return s, true
 }
 

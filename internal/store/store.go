@@ -29,8 +29,7 @@ type Store struct {
 // Name of the ConfigMap that holds a deployment's state.
 func Name(deployment string) string { return "siesta-" + deployment }
 
-// Load returns the state and whether any was found. A missing ConfigMap falls back to the
-// deployment's own annotations, which is how state written by older versions is migrated.
+// Load returns the state and whether any was found.
 func (s Store) Load(ctx context.Context, fd *unstructured.Unstructured) (state.State, bool, error) {
 	var cm corev1.ConfigMap
 	err := s.Reader.Get(ctx, types.NamespacedName{Namespace: fd.GetNamespace(), Name: Name(fd.GetName())}, &cm)
@@ -44,8 +43,7 @@ func (s Store) Load(ctx context.Context, fd *unstructured.Unstructured) (state.S
 		st, ok := state.FromData(cm.Data)
 		return st, ok, nil
 	case client.IgnoreNotFound(err) == nil:
-		st, ok := state.Read(s.Prefix, fd.GetAnnotations())
-		return st, ok, nil
+		return state.State{}, false, nil
 	default:
 		return state.State{}, false, fmt.Errorf("load state: %w", err)
 	}

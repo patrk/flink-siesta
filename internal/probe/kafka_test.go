@@ -52,14 +52,14 @@ func TestKafkaEndOffsets(t *testing.T) {
 	defer p.Close()
 
 	before, err := p.Observe(ctx, []string{"in"})
-	if err != nil || before["in"] != "0,0" {
+	if err != nil || before.Snapshot["in"] != "0,0" {
 		t.Fatalf("want fresh two-partition topic at 0,0, got %v err=%v", before, err)
 	}
 	if err := cl.ProduceSync(ctx, &kgo.Record{Topic: "in", Partition: 0, Value: []byte("v")}).FirstErr(); err != nil {
 		t.Fatal(err)
 	}
 	after, err := p.Observe(ctx, []string{"in"})
-	if err != nil || after["in"] != "1,0" {
+	if err != nil || after.Snapshot["in"] != "1,0" {
 		t.Fatalf("want partition 0 at 1 after one record, got %v", after)
 	}
 	if _, err := p.Observe(ctx, []string{"nope"}); err == nil {

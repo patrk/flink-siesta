@@ -149,8 +149,8 @@ func TestReconcileSuspendsIdleAndResumesOnInput(t *testing.T) {
 	if s, _, _ := unstructured.NestedString(fd.Object, "spec", "job", "state"); s != "suspended" {
 		t.Fatalf("want spec.job.state=suspended, got %q", s)
 	}
-	if st, _ := state.Read("siesta.flink.io", fd.GetAnnotations()); st.Phase != state.Suspended {
-		t.Fatalf("want state annotation suspended, got %q", st.Phase)
+	if st := fd.GetAnnotations()["siesta.flink.io/state"]; st != string(state.Suspended) {
+		t.Fatalf("want state annotation suspended, got %q", st)
 	}
 
 	// envtest has no Flink operator; play its part and report the suspend as complete.

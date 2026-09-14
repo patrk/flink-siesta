@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/patrk/flink-siesta/internal/decide"
 )
 
 // REST reads what only the running job knows: which Kafka topics its sources consume, the
@@ -85,19 +87,11 @@ func (r *REST) Sources(ctx context.Context, ns, name, jobID string) (Sources, er
 	return out, nil
 }
 
-// Reading is the running job's own account of its Kafka input this tick.
-type Reading struct {
-	// Offsets maps topic -> partition -> the last offset the reader emitted, InitialOffset before
-	// the first record. That is the position a savepoint would record, so end offset minus
-	// (offset+1) is exactly what the job has not processed.
-	Offsets map[string]map[int]int64
-	// IdleFor is the smallest sourceIdleTime over the source vertices: 0 while any source emits,
-	// counting since the last emitted record otherwise, including for a source that never had one.
-	IdleFor time.Duration
-}
+// Reading is the running job's own account of its Kafka input this tick; the decider owns the type.
+type Reading = decide.JobReading
 
 // InitialOffset is the currentOffset gauge's value before the reader has emitted a record.
-const InitialOffset = -1
+const InitialOffset = decide.InitialOffset
 
 // Read fetches the current offsets and the idle time of the source vertices found by Sources.
 // Two calls per source vertex. A job without source vertices, or without the gauges yet, is

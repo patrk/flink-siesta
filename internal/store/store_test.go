@@ -53,19 +53,6 @@ func TestStoreRoundTripAndOwnership(t *testing.T) {
 	}
 }
 
-func TestStoreMigratesFromAnnotations(t *testing.T) {
-	c := fake.NewClientBuilder().WithScheme(scheme.Scheme).Build()
-	s := Store{Client: c, Reader: c, Prefix: "siesta.flink.io"}
-	fd := flink.New()
-	fd.SetNamespace("ns")
-	fd.SetName("old")
-	fd.SetAnnotations(map[string]string{"siesta.flink.io/state": "suspended", "siesta.flink.io/offsets": `{"t-0":"9"}`})
-	got, ok, err := s.Load(context.Background(), fd)
-	if err != nil || !ok || got.Phase != state.Suspended || got.Snapshot["t-0"] != "9" {
-		t.Fatalf("state written by an older version must still load: ok=%v err=%v %+v", ok, err, got)
-	}
-}
-
 // countingClient counts writes so a test can prove an unchanged state is not written.
 type countingClient struct {
 	client.Client

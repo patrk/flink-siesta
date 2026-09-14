@@ -2,8 +2,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -120,10 +118,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	if pol.SourcesAuto && r.Flink == nil {
+		pol.Problems = append(pol.Problems, r.Prefix+"/sources: auto needs the job's REST API, which --flink-rest=false switched off")
+	}
 	if len(pol.Problems) > 0 {
 		return r.refuseInvalidPolicy(ctx, fd, pol, prev)
 	}
-	obs := r.observe(ctx, req, fd, pol, &prev, live)
+	obs := r.observe(ctx, req, fd, &pol, &prev, live)
 	d := r.Decider.Decide(pol, prev, live, obs, now)
 	ctrl.LoggerFrom(ctx).Info("decided", gateTrace(pol, prev, live, obs, d, now)...)
 	d = r.report(fd, pol, prev, live, obs, d, now)
@@ -245,37 +246,52 @@ func (r *Reconciler) refuseInvalidPolicy(ctx context.Context, fd *unstructured.U
 	return ctrl.Result{RequeueAfter: r.requeue()}, nil
 }
 
-// observe asks the broker, the consumer group when there is one, and the running job (ADR 12,
-// ADR 13). Everything that could not be asked stays unknown, which the decider never acts on.
-// The one piece of memory it advances is which job instance the sources were checked against.
-func (r *Reconciler) observe(ctx context.Context, req ctrl.Request, fd *unstructured.Unstructured, pol policy.Policy, prev *state.State, live decide.Live) decide.Observation {
+// observe asks the running job (ADR 12, ADR 13, ADR 14), then the broker and the consumer group
+// when there is one. Everything that could not be asked stays unknown, which the decider never
+// acts on. It advances two pieces of memory: which job instance the sources were checked
+// against, and, with sources: auto, the topics learned from it. With auto it also fills in the
+// policy's sources, so the decider and the rest of the tick see the effective list.
+func (r *Reconciler) observe(ctx context.Context, req ctrl.Request, fd *unstructured.Unstructured, pol *policy.Policy, prev *state.State, live decide.Live) decide.Observation {
 	log := ctrl.LoggerFrom(ctx)
 	obs := decide.Observation{}
 	pctx, cancel := context.WithTimeout(ctx, r.probeTimeout())
 	defer cancel()
-	var err error
-	obs.Snapshot, err = timed("offsets", func() (map[string]string, error) { return r.Probe.Observe(pctx, pol.Sources) })
+
+	// The running job is asked, once per job instance, what it reads: to verify the annotation,
+	// or with sources: auto to learn the list. Both are events, never decisions.
+	job, jobKnown, settled := r.jobSources(pctx, req, live)
+	if settled && prev.Reported.SourcesChecked != live.JobID {
+		if pol.SourcesAuto {
+			r.learnSources(fd, prev, job)
+		} else {
+			r.verifySources(fd, pol.Sources, job)
+		}
+		prev.Reported.SourcesChecked = live.JobID
+	}
+	if pol.SourcesAuto {
+		pol.Sources = prev.Sources
+		if len(pol.Sources) == 0 {
+			obs.Why = "sources: auto, waiting for the job to run once so its topics can be learned"
+			return obs
+		}
+	}
+
+	offsets, err := timed("offsets", func() (probe.Offsets, error) { return r.Probe.Observe(pctx, pol.Sources) })
+	obs.Snapshot, obs.Ends = offsets.Snapshot, offsets.Ends
 	obs.Known = known(log, "offsets", err)
 	if pol.ConsumerGroup != "" && r.Lag != nil {
 		obs.Pending, err = timed("lag", func() (int64, error) { return r.Lag.Lag(pctx, pol.ConsumerGroup, pol.Sources) })
 		obs.LagKnown = known(log, "lag", err)
 	}
-	// The running job is asked two things, both only while it runs: once per job instance,
-	// whether the sources annotation matches its graph (an event, never a decision), and, with
-	// idle: job, whether it objects to sleeping.
-	job, jobKnown, settled := r.jobSources(pctx, req, live)
-	if settled && prev.Reported.SourcesChecked != live.JobID {
-		r.verifySources(fd, pol.Sources, job)
-		prev.Reported.SourcesChecked = live.JobID
-	}
+	// With idle: job, the job is also asked whether it objects to sleeping.
 	if pol.IdleFromJob && obs.Known {
-		obs.Job, obs.JobNote = decide.JobUnknown, "job not running or its REST API not reachable"
+		obs.ReadingNote = "job not running or its REST API not reachable"
 		if jobKnown {
 			reading, err := timed("flink-rest", func() (flink.Reading, error) { return r.Flink.Read(pctx, req.Namespace, req.Name, live.JobID, job) })
-			if known(log, "flink-rest", err) {
-				obs.Job, obs.JobNote = jobGate(pol.Sources, obs.Snapshot, reading, r.requeue())
+			if obs.ReadingKnown = known(log, "flink-rest", err); obs.ReadingKnown {
+				obs.Reading = reading
 			} else {
-				obs.JobNote = err.Error()
+				obs.ReadingNote = err.Error()
 			}
 		}
 	}
@@ -427,44 +443,16 @@ func (r *Reconciler) jobSources(ctx context.Context, req ctrl.Request, live deci
 	return src, true, len(src.Topics) > 0 || cached.attempts >= sourceAttempts
 }
 
-// jobGate turns the job's reading into its answer. Pending is exact: the broker's end offset
-// from this tick against the last offset the reader emitted, per declared partition. A reader
-// still at its initial offset is caught up only if it also reports idle, which is a reader
-// that had nothing to read from where it started. Quiet means no record emitted for at
-// least one poll interval, so a job still working through a fetched backlog objects.
-func jobGate(sources []string, snapshot map[string]string, reading flink.Reading, quiet time.Duration) (gate decide.JobGate, note string) {
-	var pending int64
-	for _, topic := range sources {
-		ends := strings.Split(snapshot[topic], ",")
-		cur := reading.Offsets[topic]
-		if snapshot[topic] == "" || cur == nil {
-			return decide.JobUnknown, "job exposes no offsets for " + topic
-		}
-		for p, raw := range ends {
-			end, err := strconv.ParseInt(raw, 10, 64)
-			if err != nil || end < 0 {
-				return decide.JobUnknown, fmt.Sprintf("no end offset for %s partition %d", topic, p)
-			}
-			emitted, has := cur[p]
-			switch {
-			case !has:
-				return decide.JobUnknown, fmt.Sprintf("job exposes no offset for %s partition %d", topic, p)
-			case emitted == flink.InitialOffset && reading.IdleFor == 0:
-				pending += end // nothing emitted yet and not idle: the reader is about to read
-			case emitted == flink.InitialOffset:
-				// idle without ever emitting: nothing to read from where it started
-			default:
-				pending += max(0, end-(emitted+1))
-			}
-		}
-	}
+// learnSources is verifySources for sources: auto: the job graph is the source of truth, and
+// what it says is remembered so that the wake signal exists while the job sleeps and has no
+// graph to ask. A job that exposes no Kafka source teaches nothing and is reported once.
+func (r *Reconciler) learnSources(fd *unstructured.Unstructured, prev *state.State, job flink.Sources) {
 	switch {
-	case pending > 0:
-		return decide.JobBusy, fmt.Sprintf("%d records pending in the job", pending)
-	case reading.IdleFor < quiet:
-		return decide.JobBusy, "job emitted a record " + reading.IdleFor.Round(time.Second).String() + " ago"
-	default:
-		return decide.JobIdle, ""
+	case len(job.Topics) == 0:
+		r.event(fd, corev1.EventTypeWarning, "SourcesUnverified", "Learn", "job exposes no Kafka source metrics; sources: auto has nothing to learn from it")
+	case !sameSet(prev.Sources, job.Topics):
+		prev.Sources = job.Topics
+		r.event(fd, corev1.EventTypeNormal, "SourcesLearned", "Learn", "job reads "+strings.Join(job.Topics, ",")+"; remembered as the sources to watch")
 	}
 }
 
@@ -513,7 +501,7 @@ func gateTrace(pol policy.Policy, prev state.State, live decide.Live, obs decide
 		kv = append(kv, "group", pol.ConsumerGroup, "lagKnown", obs.LagKnown, "pending", obs.Pending)
 	}
 	if pol.IdleFromJob {
-		kv = append(kv, "jobGate", obs.Job.String(), "jobNote", obs.JobNote)
+		kv = append(kv, "jobGate", d.Gate.String(), "jobNote", d.GateNote)
 	}
 	return kv
 }

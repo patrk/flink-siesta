@@ -27,13 +27,13 @@ func NewKafka(opts ...kgo.Opt) (*Kafka, error) {
 
 func (k *Kafka) Close() { k.cl.Close() }
 
-func (k *Kafka) Observe(ctx context.Context, topics []string) (map[string]string, error) {
+func (k *Kafka) Observe(ctx context.Context, topics []string) (Offsets, error) {
 	ends, err := k.adm.ListEndOffsets(ctx, topics...)
 	if err == nil {
 		err = ends.Error()
 	}
 	if err != nil {
-		return nil, fmt.Errorf("end offsets for %s: %w", strings.Join(topics, ","), err)
+		return Offsets{}, fmt.Errorf("end offsets for %s: %w", strings.Join(topics, ","), err)
 	}
 	// One entry per topic, end offsets joined in partition order: "topic" -> "8812,8790,9001".
 	// Ten thousand partitions fit comfortably in a ConfigMap this way; per-partition keys would not.
@@ -47,7 +47,7 @@ func (k *Kafka) Observe(ctx context.Context, topics []string) (map[string]string
 		perTopic[o.Topic] = parts
 	})
 	if len(perTopic) == 0 {
-		return nil, fmt.Errorf("no partitions for %s", strings.Join(topics, ","))
+		return Offsets{}, fmt.Errorf("no partitions for %s", strings.Join(topics, ","))
 	}
 	out := make(map[string]string, len(perTopic))
 	for topic, parts := range perTopic {
@@ -60,7 +60,7 @@ func (k *Kafka) Observe(ctx context.Context, topics []string) (map[string]string
 		}
 		out[topic] = b.String()
 	}
-	return out, nil
+	return Offsets{Snapshot: out, Ends: perTopic}, nil
 }
 
 // Lag sums end offset minus the group's committed offset over every partition of the topics.

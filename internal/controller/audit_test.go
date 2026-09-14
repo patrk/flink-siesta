@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -357,5 +358,97 @@ func TestSavingsMetricsFollowThePhase(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(metrics.State.WithLabelValues("default", "saving", "suspended")); got != 1 {
 		t.Fatalf("state gauge = %v", got)
+	}
+}
+
+// sources: auto learns the topics from the running job, remembers them, and uses the memory as
+// the wake signal while the job sleeps (ADR 14). Without a job to learn from, nothing acts.
+func TestSourcesAutoLearnsFromTheJobAndWakesFromMemory(t *testing.T) {
+	c := startEnv(t)
+	ctx := context.Background()
+	fd := createDeployment(t, c, "auto", "savepoint")
+	ann := fd.GetAnnotations()
+	ann["siesta.flink.io/sources"] = "auto"
+	fd.SetAnnotations(ann)
+	if err := c.Update(ctx, fd); err != nil {
+		t.Fatal(err)
+	}
+	now := t0
+	var asked []string
+	offsets := map[string]string{"orders": "5"}
+	r := newReconciler(c, &now, probe.Func(func(_ context.Context, sources []string) (map[string]string, error) {
+		asked = append(asked, sources...)
+		return offsets, nil
+	}))
+	job := &fakeJob{topics: []string{"orders"}}
+	rec := &fakeRecorder{}
+	r.Flink, r.Recorder = job, rec
+	key := types.NamespacedName{Name: "auto", Namespace: "default"}
+	tick := func() {
+		t.Helper()
+		if _, err := r.Reconcile(ctx, reconcileRequest(key)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// No job id yet: nothing to learn from, nothing asked, and the reason says so.
+	tick()
+	if len(asked) != 0 {
+		t.Fatalf("nothing may be asked before the sources are known, asked %v", asked)
+	}
+	st, _, _ := r.Store.Load(ctx, fd)
+	if !strings.Contains(st.Reason, "waiting for the job to run once") {
+		t.Fatalf("reason = %q", st.Reason)
+	}
+
+	setJobID(t, r, fd, "j1")
+	tick()
+	if rec.count("SourcesLearned") != 1 {
+		t.Fatalf("events = %v", rec.reasons)
+	}
+	if st, _, _ = r.Store.Load(ctx, fd); strings.Join(st.Sources, ",") != "orders" {
+		t.Fatalf("memory must hold the learned sources, got %v", st.Sources)
+	}
+	if len(asked) == 0 || asked[len(asked)-1] != "orders" {
+		t.Fatalf("the broker must be asked about the learned topics, asked %v", asked)
+	}
+
+	// Idle on the learned topic: suspend. New input on it: resume, from memory, no job to ask.
+	now = now.Add(2 * time.Hour)
+	tick()
+	if s := specJobState(t, c, key); s != "suspended" {
+		t.Fatal("expected a suspend on the learned sources")
+	}
+	setStatus(t, c, fd, map[string]any{"lifecycleState": "SUSPENDED"})
+	job.err = errors.New("no JobManager while suspended")
+	offsets["orders"] = "6"
+	now = now.Add(time.Minute)
+	tick()
+	if s := specJobState(t, c, key); s != "running" {
+		t.Fatal("input on a remembered source must resume the job")
+	}
+}
+
+// sources: auto needs the job's REST API; with it switched off the policy is invalid.
+func TestSourcesAutoWithoutTheRESTAPIIsInvalid(t *testing.T) {
+	c := startEnv(t)
+	ctx := context.Background()
+	fd := createDeployment(t, c, "auto-norest", "savepoint")
+	ann := fd.GetAnnotations()
+	ann["siesta.flink.io/sources"] = "auto"
+	fd.SetAnnotations(ann)
+	if err := c.Update(ctx, fd); err != nil {
+		t.Fatal(err)
+	}
+	now := t0
+	r := newReconciler(c, &now, fixedOffsets(map[string]string{"orders": "5"}))
+	rec := &fakeRecorder{}
+	r.Recorder = rec
+	key := types.NamespacedName{Name: "auto-norest", Namespace: "default"}
+	if _, err := r.Reconcile(ctx, reconcileRequest(key)); err != nil {
+		t.Fatal(err)
+	}
+	if rec.count("InvalidPolicy") != 1 {
+		t.Fatalf("events = %v", rec.reasons)
 	}
 }

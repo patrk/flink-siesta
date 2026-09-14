@@ -13,11 +13,14 @@ const (
 )
 
 type Policy struct {
-	Mode      Mode
-	Sources   []string      // Kafka topic names
-	IdleAfter time.Duration // no input for this long -> suspend
-	MinAwake  time.Duration // never suspend sooner than this after a resume or restart
-	Restart   bool          // restart-on-failure enabled
+	Mode    Mode
+	Sources []string // Kafka topic names; empty with SourcesAuto until learned from the job
+	// SourcesAuto, from `sources: auto`, means the topics are learned from the running job's
+	// graph and remembered, instead of being written by hand (ADR 14).
+	SourcesAuto bool
+	IdleAfter   time.Duration // no input for this long -> suspend
+	MinAwake    time.Duration // never suspend sooner than this after a resume or restart
+	Restart     bool          // restart-on-failure enabled
 	// ConsumerGroup, when set, makes "idle" also require that the group has consumed everything
 	// (lag zero). Empty means only "no new input" is checked.
 	ConsumerGroup string
@@ -56,13 +59,17 @@ func Read(prefix string, ann map[string]string) (Policy, bool) {
 	}
 	p.IdleAfter = p.duration(prefix+"/idle-after", ann, 14*24*time.Hour)
 	p.MinAwake = p.duration(prefix+"/min-awake", ann, time.Hour)
-	for _, s := range strings.Split(ann[prefix+"/sources"], ",") {
-		if s = strings.TrimSpace(s); s != "" {
-			p.Sources = append(p.Sources, s)
+	if strings.EqualFold(strings.TrimSpace(ann[prefix+"/sources"]), "auto") {
+		p.SourcesAuto = true
+	} else {
+		for _, s := range strings.Split(ann[prefix+"/sources"], ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				p.Sources = append(p.Sources, s)
+			}
 		}
 	}
-	if len(p.Sources) == 0 {
-		p.Problems = append(p.Problems, prefix+"/sources is required: comma-separated topic names")
+	if len(p.Sources) == 0 && !p.SourcesAuto {
+		p.Problems = append(p.Problems, prefix+"/sources is required: comma-separated topic names, or auto")
 	}
 	// Reserved for a per-deployment Kafka cluster. The name is part of the contract already, so
 	// that adding it later is not a breaking change; until then it is refused, not ignored.

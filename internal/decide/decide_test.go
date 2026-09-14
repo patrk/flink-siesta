@@ -41,8 +41,18 @@ func withJobGate(p policy.Policy) policy.Policy {
 	return p
 }
 
+// job builds an observation whose reading yields the wanted gate against ends {"t": [100]}.
 func job(m map[string]string, g JobGate) Observation {
-	return Observation{Snapshot: m, Known: true, Job: g, JobNote: "note"}
+	o := Observation{Snapshot: m, Known: true, Ends: map[string][]int64{"t": {100}}}
+	switch g {
+	case JobIdle:
+		o.ReadingKnown, o.Reading = true, JobReading{Offsets: map[string]map[int]int64{"t": {0: 99}}, IdleFor: time.Hour}
+	case JobBusy:
+		o.ReadingKnown, o.Reading = true, JobReading{Offsets: map[string]map[int]int64{"t": {0: 50}}, IdleFor: 0}
+	default:
+		o.ReadingNote = "note"
+	}
+	return o
 }
 
 func suspendedState() state.State {
@@ -232,7 +242,7 @@ func TestLagReasonsReachTheObject(t *testing.T) {
 	if got := d.Decide(withGroup(auto), prev, running, lag(snap("1"), 9), later); got.Next.Reason != "records pending for group g" || got.Next.Pending != 9 {
 		t.Fatalf("Next = %+v", got.Next)
 	}
-	if got := d.Decide(withJobGate(auto), prev, running, job(snap("1"), JobBusy), later); got.Next.Reason != "job busy: note" {
+	if got := d.Decide(withJobGate(auto), prev, running, job(snap("1"), JobBusy), later); got.Next.Reason != "job busy: 49 records pending in the job" {
 		t.Fatalf("Next.Reason = %q", got.Next.Reason)
 	}
 	if got := d.Decide(withJobGate(auto), prev, running, job(snap("1"), JobUnknown), later); got.Next.Reason != "job unknown: note" {

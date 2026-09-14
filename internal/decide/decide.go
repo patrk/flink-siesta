@@ -62,6 +62,9 @@ type Decision struct {
 	// Held names the gate that keeps an idle job awake this tick, empty when none does:
 	// min-awake, lag-unknown, lag-pending, job-unknown, job-busy. Observed, never acted on.
 	Held string
+	// Gate and GateNote are the job gate's answer when it was consulted, for the log line.
+	Gate     JobGate
+	GateNote string
 	// ResumedAfter is non-zero on the first tick a resumed job reports RUNNING again: the time
 	// from the input that woke it to the job running. Observed, never acted on.
 	ResumedAfter time.Duration
@@ -83,10 +86,31 @@ type Observation struct {
 	Known    bool
 	Pending  int64 // records the consumer group has not consumed yet; meaningful only if LagKnown
 	LagKnown bool
-	// Job is the running job's own view, used only with idle: job. It can object, never decide.
-	Job     JobGate
-	JobNote string // why the job gate is busy or unknown, for the reason on the object
+	// Ends holds the broker's end offset per partition for each source, the typed side of the
+	// snapshot, for the job gate. A missing partition is -1.
+	Ends map[string][]int64
+	// Reading is the running job's own view, used only with idle: job (ADR 13). ReadingKnown is
+	// false when the job could not be asked, and ReadingNote says why.
+	Reading      JobReading
+	ReadingKnown bool
+	ReadingNote  string
+	// Why says why the snapshot is unknown when the observer knows better than "unavailable",
+	// for example sources: auto before the job has run once.
+	Why string
 }
+
+// JobReading is what the running job's REST API reports about its Kafka sources.
+type JobReading struct {
+	// Offsets maps topic -> partition -> the last offset the reader emitted, InitialOffset before
+	// the first record. That is the position a savepoint would record.
+	Offsets map[string]map[int]int64
+	// IdleFor is the smallest sourceIdleTime over the source vertices: 0 while any source emits,
+	// counting since the last emitted record otherwise, including for a source that never had one.
+	IdleFor time.Duration
+}
+
+// InitialOffset is the currentOffset gauge's value before the reader has emitted a record.
+const InitialOffset = -1
 
 // JobGate is the job's answer to "may this job sleep": ADR 13.
 type JobGate int
@@ -108,9 +132,21 @@ func (g JobGate) String() string {
 	}
 }
 
-type Decider struct{ restart RestartPolicy }
+type Decider struct {
+	restart RestartPolicy
+	// Quiet is how long a source must have emitted nothing before the job gate calls it idle:
+	// one poll interval, so that a job working through a fetched backlog still objects.
+	Quiet time.Duration
+}
 
 func New(r RestartPolicy) *Decider { return &Decider{restart: r} }
+
+func (d *Decider) quiet() time.Duration {
+	if d.Quiet > 0 {
+		return d.Quiet
+	}
+	return time.Minute
+}
 
 func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, obs Observation, now time.Time) Decision {
 	if live.operatorBusy() {
@@ -133,6 +169,12 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, obs Obser
 	prev.Generation = live.Generation
 
 	if !obs.Known {
+		if obs.Why != "" {
+			// A named reason is a lasting situation, not a transient failure: it goes on the object.
+			next := prev
+			next.Reason = obs.Why
+			return Decision{Action: None, Next: next, Reason: obs.Why}
+		}
 		return Decision{Action: None, Next: prev, Reason: ReasonOffsetsUnknown} // unknown never acts
 	}
 
@@ -238,14 +280,18 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, obs Obser
 			}
 			if p.IdleFromJob {
 				// The job's own view is the last gate (ADR 13): it may only object.
-				switch obs.Job {
+				gate, note := JobUnknown, obs.ReadingNote
+				if obs.ReadingKnown {
+					gate, note = jobGate(p.Sources, obs.Ends, obs.Reading, d.quiet())
+				}
+				switch gate {
 				case JobIdle:
 				case JobBusy:
-					cur.Reason = reasonJobBusy(obs.JobNote)
-					return Decision{Action: None, Next: cur, Reason: cur.Reason, Held: "job-busy"}
+					cur.Reason = reasonJobBusy(note)
+					return Decision{Action: None, Next: cur, Reason: cur.Reason, Held: "job-busy", Gate: gate, GateNote: note}
 				default:
-					cur.Reason = reasonJobUnknown(obs.JobNote)
-					return Decision{Action: None, Next: cur, Reason: cur.Reason, Held: "job-unknown"}
+					cur.Reason = reasonJobUnknown(note)
+					return Decision{Action: None, Next: cur, Reason: cur.Reason, Held: "job-unknown", Gate: gate, GateNote: note}
 				}
 			}
 			cur.Phase, cur.SuspendedAt = state.Suspended, now

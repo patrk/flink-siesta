@@ -62,7 +62,14 @@ func TestEveryOperatorStateHasADefinedAnswer(t *testing.T) {
 									pol := auto
 									pol.IdleFromJob = fromJob
 									o := obs
-									o.Job, o.JobNote = gate, "note"
+									o.Ends = map[string][]int64{"t": {100}}
+									o.ReadingNote = "note"
+									switch gate {
+									case JobIdle:
+										o.ReadingKnown, o.Reading = true, JobReading{Offsets: map[string]map[int]int64{"t": {0: 99}}, IdleFor: time.Hour}
+									case JobBusy:
+										o.ReadingKnown, o.Reading = true, JobReading{Offsets: map[string]map[int]int64{"t": {0: 50}}}
+									}
 									prev := state.State{Phase: ph, Snapshot: snap("100"), LastActivityAt: t0, AwakeSince: t0, Generation: 1}
 									if ph == state.Suspended {
 										prev.SuspendedAt = t0
