@@ -4,7 +4,7 @@
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
-  name: {{ include "siesta.fullname" . }}-writes
+  name: {{ include "siesta.fullname" . }}-{{ .Release.Namespace }}-writes
 spec:
   failurePolicy: Fail
   matchConstraints:
@@ -36,9 +36,9 @@ spec:
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
 metadata:
-  name: {{ include "siesta.fullname" . }}-writes
+  name: {{ include "siesta.fullname" . }}-{{ .Release.Namespace }}-writes
 spec:
-  policyName: {{ include "siesta.fullname" . }}-writes
+  policyName: {{ include "siesta.fullname" . }}-{{ .Release.Namespace }}-writes
   validationActions: [Deny]
   matchResources:
     namespaceSelector:

@@ -2,6 +2,9 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: {{ include "siesta.fullname" . }}
+  {{- with .Values.serviceAccount.annotations }}
+  annotations: {{ toYaml . | nindent 4 }}
+  {{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -37,12 +40,22 @@ spec:
       {{- with .Values.tolerations }}
       tolerations: {{ toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.affinity }}
-      affinity: {{ toYaml . | nindent 8 }}
+      {{- if .Values.affinity }}
+      affinity: {{ toYaml .Values.affinity | nindent 8 }}
+      {{- else if gt (int .Values.replicaCount) 1 }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels: { app.kubernetes.io/name: flink-siesta, app.kubernetes.io/instance: {{ .Release.Name }} }
       {{- end }}
       containers:
         - name: siesta
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          image: "{{ .Values.image.repository }}{{ if .Values.image.digest }}@{{ .Values.image.digest }}{{ else }}:{{ .Values.image.tag | default .Chart.AppVersion }}{{ end }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - --annotation-prefix={{ .Values.config.annotationPrefix }}
             - --dry-run={{ .Values.config.dryRun }}
@@ -54,6 +67,9 @@ spec:
             - --restart-backoff={{ .Values.config.restart.backoff }}
             - --flink-rest={{ .Values.config.flinkRest }}
             - --leader-elect={{ gt (int .Values.replicaCount) 1 }}
+            {{- range .Values.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
           env:
             - name: POD_NAMESPACE
               valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
@@ -95,7 +111,7 @@ spec:
           readinessProbe: { httpGet: { path: /readyz, port: health } }
           securityContext: {{ toYaml .Values.securityContext | nindent 12 }}
           resources: {{ toYaml .Values.resources | nindent 12 }}
-          {{- if or .Values.kafka.tls.existingSecret .Values.kafka.sasl.existingSecret }}
+          {{- if or .Values.kafka.tls.existingSecret .Values.kafka.sasl.existingSecret .Values.extraVolumeMounts }}
           volumeMounts:
             {{- if .Values.kafka.sasl.existingSecret }}
             - { name: kafka-auth, mountPath: /etc/siesta/kafka-auth, readOnly: true }
@@ -103,8 +119,11 @@ spec:
             {{- if .Values.kafka.tls.existingSecret }}
             - { name: kafka-tls, mountPath: /etc/siesta/kafka-tls, readOnly: true }
             {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- end }}
-      {{- if or .Values.kafka.tls.existingSecret .Values.kafka.sasl.existingSecret }}
+      {{- if or .Values.kafka.tls.existingSecret .Values.kafka.sasl.existingSecret .Values.extraVolumes }}
       volumes:
         {{- if .Values.kafka.sasl.existingSecret }}
         - name: kafka-auth
@@ -114,8 +133,11 @@ spec:
         - name: kafka-tls
           secret: { secretName: {{ .Values.kafka.tls.existingSecret }} }
         {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- end }}
 {{- range .Values.extraObjects }}
 ---
-{{ toYaml . }}
+{{ tpl (toYaml .) $ }}
 {{- end }}

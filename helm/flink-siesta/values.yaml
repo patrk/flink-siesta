@@ -1,7 +1,18 @@
 image:
   repository: ghcr.io/patrk/flink-siesta
   tag: ""
+  # A digest wins over the tag when set, for registries that mandate pinning.
+  digest: ""
+  pullPolicy: IfNotPresent
 replicaCount: 2
+
+serviceAccount:
+  # Annotations for workload identity, for example azure.workload.identity/client-id or
+  # eks.amazonaws.com/role-arn.
+  annotations: {}
+
+# Flags not covered by config, for example --flink-rest-port=8082 or --resume-stall-after=20m.
+extraArgs: []
 
 config:
   annotationPrefix: siesta.flink.io
@@ -64,4 +75,8 @@ podLabels: {}
 imagePullSecrets: []
 priorityClassName: ""
 extraEnv: []
+extraVolumes: []
+extraVolumeMounts: []
+# With more than one replica the pods prefer different nodes. Set affinity to override that.
+# Extra manifests, rendered through tpl, so {{ .Release.Name }} and friends work inside them.
 extraObjects: []
