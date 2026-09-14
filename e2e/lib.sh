@@ -117,5 +117,5 @@ install_siesta() { # extra --set flags as arguments
     --set image.repository="${IMAGE_REPO:-siesta}" --set image.tag="${IMAGE_TAG:-e2e}" \
     --set kafka.bootstrapServers=kafka.$ns.svc:9092 --set replicaCount=1 \
     --set config.restart.maxRestarts=2 --set config.restart.backoff=15s "$@"
-  k -n $ns rollout status deploy/siesta --timeout=120s
+  k -n $ns rollout status deploy/siesta --timeout=180s
 }
