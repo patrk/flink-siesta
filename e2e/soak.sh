@@ -9,7 +9,7 @@ ctx=${KUBE_CONTEXT:-kind-siesta}
 k() { kubectl --context "$ctx" "$@"; }
 DURATION_MIN=${SOAK_MINUTES:-45}
 FLINK_VERSION=${FLINK_VERSION:-2.2}
-render() { local out; out=$(mktemp); sed -e "s#image: flink:2.2#image: flink:${FLINK_VERSION}#" -e "s#siesta-e2e-job:2.2#siesta-e2e-job:${FLINK_VERSION}#" -e "s#flinkVersion: v2_2#flinkVersion: v${FLINK_VERSION/./_}#" -e "s#name: example#name: $2#" -e "s#sources: e2e-in#sources: $2#" "$1" > "$out"
+render() { local out; out=$(mktemp); sed -e "s#image: flink:2.2#image: flink:${FLINK_VERSION}#" -e "s#siesta-e2e-job:2.2#siesta-e2e-job:${FLINK_VERSION}#" -e "s#flinkVersion: v2_2#flinkVersion: v${FLINK_VERSION/./_}#" -e "s#name: example#name: $2#" -e "s#sources: e2e-in#sources: $2#" -e "s#\"--topics\", \"e2e-in\", \"--group\", \"e2e\"#\"--topics\", \"$2\", \"--group\", \"$2\"#" "$1" > "$out"
   if [ "${FLINK_VERSION%%.*}" = 1 ]; then sed -i.bak -e 's#execution.checkpointing.savepoint-dir#state.savepoints.dir#' -e 's#execution.checkpointing.dir#state.checkpoints.dir#' "$out" && rm -f "$out.bak"; fi; echo "$out"; }
 rss() { k -n $ns exec deploy/kafka -- sh -c "wget -qO- http://siesta-metrics.$ns.svc:8080/metrics 2>/dev/null || curl -s http://siesta-metrics.$ns.svc:8080/metrics" | awk '/^process_resident_memory_bytes/ {print int($2/1048576)}'; }
 
