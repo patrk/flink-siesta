@@ -79,6 +79,7 @@ func TestDecide(t *testing.T) {
 		{"RESTARTING over failing-after is failing", auto, state.Initial(t0), Live{SpecJobState: "running", UpgradeMode: "savepoint", JobState: "RESTARTING", LifecycleState: "STABLE"}, seen(snap("1")), t0.Add(11 * time.Minute), Restart},
 		{"resumed outside siesta: we notice and let go", auto, suspendedState(), Live{SpecJobState: "running", UpgradeMode: "savepoint", JobState: "RUNNING", LifecycleState: "STABLE"}, seen(snap("100")), t0.Add(time.Hour), None},
 		{"suspended outside siesta: not ours to resume", auto, withSnap(state.Initial(t0), snap("1")), Live{SpecJobState: "suspended", UpgradeMode: "savepoint", JobState: "FINISHED", LifecycleState: "SUSPENDED"}, seen(snap("2")), t0.Add(time.Hour), None},
+		{"operator health-check on: our restart steps back", auto, state.Initial(t0), Live{SpecJobState: "running", UpgradeMode: "savepoint", JobState: "FAILED", LifecycleState: "FAILED", OperatorRestarts: true}, seen(snap("1")), t0.Add(time.Minute), None},
 		{"only suspends a RUNNING job", auto, withSnap(state.Initial(t0), snap("1")), Live{SpecJobState: "running", JobState: "RESTARTING", LifecycleState: "STABLE"}, seen(snap("1")), t0.Add(15 * 24 * time.Hour), Restart},
 	}
 	for _, c := range cases {

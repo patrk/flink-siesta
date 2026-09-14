@@ -1,0 +1,20 @@
+# Changelog
+
+## 0.2.1
+
+- Kafka credentials can be read from files and are read on every new connection, so a rotated Secret needs no restart. The chart mounts the SASL Secret as files.
+- When a deployment enables the operator's own health-check restart, Siesta's restart budget steps back with a reason instead of competing.
+
+## 0.2.0
+
+- Idle also means caught up when a consumer group is known (`consumer-group` annotation).
+- The controller never changes `upgradeMode` and refuses to suspend `stateless` deployments.
+- Suspend only from STABLE, resume only from SUSPENDED: no races with the operator.
+- Prometheus metrics, events on every transition, edge-triggered source reachability events.
+- Controller memory in an owned ConfigMap; only `state` and `reason` on the deployment.
+- Writes with the `siesta` field manager; a ValidatingAdmissionPolicy pins them to two fields.
+- Signed, attested multi-arch releases. e2e on Flink 2.2, chaos and soak scenarios, nightly operator-by-Flink grid.
+
+## 0.1.0
+
+- First release: suspend on idle Kafka input, resume on the first record, restart budget.

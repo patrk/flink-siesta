@@ -23,3 +23,13 @@ func TestLiveReadsBothErrorFields(t *testing.T) {
 		t.Fatalf("absent spec fields must take the CRD defaults, got %+v", l)
 	}
 }
+
+func TestLiveReadsTheOperatorHealthCheckFlag(t *testing.T) {
+	u := New()
+	if err := unstructured.SetNestedField(u.Object, "true", "spec", "flinkConfiguration", "kubernetes.operator.cluster.health-check.enabled"); err != nil {
+		t.Fatal(err)
+	}
+	if !Live(u).OperatorRestarts {
+		t.Fatal("the health-check flag must be visible to the decider")
+	}
+}

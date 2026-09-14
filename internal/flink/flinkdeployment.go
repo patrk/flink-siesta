@@ -35,13 +35,15 @@ func Live(u *unstructured.Unstructured) decide.Live {
 		upgradeMode = "stateless" // the CRD default
 	}
 	savepoint, _, _ := unstructured.NestedString(u.Object, "status", "jobStatus", "upgradeSavepointPath")
+	healthCheck, _, _ := unstructured.NestedString(u.Object, "spec", "flinkConfiguration", "kubernetes.operator.cluster.health-check.enabled")
 	return decide.Live{
-		SpecJobState:   specState,
-		UpgradeMode:    upgradeMode,
-		SavepointPath:  savepoint,
-		Generation:     u.GetGeneration(),
-		JobState:       jobState,
-		LifecycleState: lifecycle,
-		ReconcileError: recErr,
+		SpecJobState:     specState,
+		UpgradeMode:      upgradeMode,
+		SavepointPath:    savepoint,
+		OperatorRestarts: healthCheck == "true",
+		Generation:       u.GetGeneration(),
+		JobState:         jobState,
+		LifecycleState:   lifecycle,
+		ReconcileError:   recErr,
 	}
 }

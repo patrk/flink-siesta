@@ -77,6 +77,8 @@ A private CA goes in a Secret referenced by `kafka.tls.existingSecret` under the
 - **Clearing `unrecoverable`.** Fix the cause, then edit the FlinkDeployment spec. A new generation resets the state and the restart budget, and a Warning event marks the change.
 - **Invalid annotations are reported, not guessed.** A bad duration, an unknown mode or a missing `sources` raises `InvalidPolicy` once, and the job is left untouched until you fix it.
 - **Kafka outages are reported once.** When the broker becomes unreachable the controller raises `SourceUnreachable` a single time, does nothing until it is back, and then raises `SourceReachable` once.
+- **Credential rotation needs no restart.** The chart mounts the SASL Secret as files and the controller reads them on every new connection, so a rotated Secret is picked up as soon as the kubelet refreshes the mount and the next connection authenticates. When running the binary outside the chart with `KAFKA_SASL_USERNAME` and `KAFKA_SASL_PASSWORD` in the environment, a rotation still needs a restart.
+- **The operator's own restart wins.** If a deployment enables `kubernetes.operator.cluster.health-check.enabled`, Siesta leaves failed jobs to the operator and says `restart left to the operator's health check`, so the two never fight.
 - **A stalled resume is reported.** If a resumed job is not RUNNING after `--resume-stall-after`, ten minutes by default, `ResumeStalled` is raised once. The usual causes are a full cluster, a missing image or a savepoint that no longer restores.
 - **A suspend without a savepoint is reported.** If the savepoint fails, the operator falls back to its last checkpoint and still reports the suspend as done. Siesta raises `SuspendedWithoutSavepoint` once, and the resume still works from that checkpoint. A common cause is that the operator asks for canonical savepoints by default and some operators cannot produce them, the Print sink on Flink 2.x for one. If the job only ever resumes on the same state backend, set `kubernetes.operator.savepoint.format.type: NATIVE` in its `flinkConfiguration`.
 
@@ -91,8 +93,6 @@ These follow from what suspending a Flink job means, and Siesta cannot remove th
 These are on the roadmap.
 
 - **Only the declared sources are watched** (0.3). A job that also reads a non-Kafka source, such as a broadcast stream or a JDBC lookup, is not resumed by activity there, and the hand-written `sources` annotation can drift from the job graph. The job graph is available from Flink's REST API while the job runs, so a later version can check the annotation against it and warn on drift.
-- **Credential rotation needs a restart** (0.2.1). Kafka credentials are read from the environment at start. After a rotation the controller reports `SourceUnreachable` until its pod restarts. Reading the credential from a mounted file and re-reading it on an authentication failure removes the restart.
-- **Two restart mechanisms would fight** (0.2.1). If the operator's own health-check restart is on through `kubernetes.operator.cluster.health-check.enabled`, set `restart: off` here, or the other way round. A later version detects the operator setting and steps back on its own.
 
 ## With Argo CD or Flux
 

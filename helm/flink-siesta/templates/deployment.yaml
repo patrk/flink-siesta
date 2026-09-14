@@ -52,10 +52,12 @@ spec:
             {{- if .Values.kafka.sasl.existingSecret }}
             - name: KAFKA_SASL_MECHANISM
               value: {{ .Values.kafka.sasl.mechanism | quote }}
-            - name: KAFKA_SASL_USERNAME
-              valueFrom: { secretKeyRef: { name: {{ .Values.kafka.sasl.existingSecret }}, key: {{ .Values.kafka.sasl.usernameKey }} } }
-            - name: KAFKA_SASL_PASSWORD
-              valueFrom: { secretKeyRef: { name: {{ .Values.kafka.sasl.existingSecret }}, key: {{ .Values.kafka.sasl.passwordKey }} } }
+            # Mounted as files, not env: the kubelet refreshes them after a rotation, and the
+            # controller reads them on every new connection, so rotation needs no restart.
+            - name: KAFKA_SASL_USERNAME_FILE
+              value: /etc/siesta/kafka-auth/{{ .Values.kafka.sasl.usernameKey }}
+            - name: KAFKA_SASL_PASSWORD_FILE
+              value: /etc/siesta/kafka-auth/{{ .Values.kafka.sasl.passwordKey }}
             {{- end }}
             {{- if .Values.kafka.tls.existingSecret }}
             - name: KAFKA_TLS_CA_FILE
@@ -81,12 +83,23 @@ spec:
           readinessProbe: { httpGet: { path: /readyz, port: health } }
           securityContext: {{ toYaml .Values.securityContext | nindent 12 }}
           resources: {{ toYaml .Values.resources | nindent 12 }}
-          {{- if .Values.kafka.tls.existingSecret }}
+          {{- if or .Values.kafka.tls.existingSecret .Values.kafka.sasl.existingSecret }}
           volumeMounts:
+            {{- if .Values.kafka.sasl.existingSecret }}
+            - { name: kafka-auth, mountPath: /etc/siesta/kafka-auth, readOnly: true }
+            {{- end }}
+            {{- if .Values.kafka.tls.existingSecret }}
             - { name: kafka-tls, mountPath: /etc/siesta/kafka-tls, readOnly: true }
+            {{- end }}
       volumes:
+        {{- if .Values.kafka.sasl.existingSecret }}
+        - name: kafka-auth
+          secret: { secretName: {{ .Values.kafka.sasl.existingSecret }} }
+        {{- end }}
+        {{- if .Values.kafka.tls.existingSecret }}
         - name: kafka-tls
           secret: { secretName: {{ .Values.kafka.tls.existingSecret }} }
+        {{- end }}
           {{- end }}
 {{- range .Values.extraObjects }}
 ---

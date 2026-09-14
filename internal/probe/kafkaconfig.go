@@ -1,6 +1,7 @@
 package probe
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -18,6 +19,8 @@ type KafkaConfig struct {
 	SASLMechanism    string // PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512
 	SASLUsername     string
 	SASLPassword     string
+	SASLUsernameFile string // if set, read on every authentication: rotation needs no restart
+	SASLPasswordFile string
 	TLSCAFile        string // optional: PEM bundle for a private CA
 	TLSCertFile      string // optional: client certificate for mTLS
 	TLSKeyFile       string
@@ -32,6 +35,8 @@ func KafkaConfigFromEnv() KafkaConfig {
 		SASLMechanism:    os.Getenv("KAFKA_SASL_MECHANISM"),
 		SASLUsername:     os.Getenv("KAFKA_SASL_USERNAME"),
 		SASLPassword:     os.Getenv("KAFKA_SASL_PASSWORD"),
+		SASLUsernameFile: os.Getenv("KAFKA_SASL_USERNAME_FILE"),
+		SASLPasswordFile: os.Getenv("KAFKA_SASL_PASSWORD_FILE"),
 		TLSCAFile:        os.Getenv("KAFKA_TLS_CA_FILE"),
 		TLSCertFile:      os.Getenv("KAFKA_TLS_CERT_FILE"),
 		TLSKeyFile:       os.Getenv("KAFKA_TLS_KEY_FILE"),
@@ -54,16 +59,33 @@ func (c KafkaConfig) Opts() ([]kgo.Opt, error) {
 	}
 
 	if useSASL {
-		if c.SASLUsername == "" || c.SASLPassword == "" {
+		fromFiles := c.SASLUsernameFile != "" || c.SASLPasswordFile != ""
+		if !fromFiles && (c.SASLUsername == "" || c.SASLPassword == "") {
 			return nil, fmt.Errorf("kafka: %s requires SASL username and password", protocol)
 		}
+		if fromFiles {
+			if _, _, err := c.credentials(); err != nil {
+				return nil, err
+			}
+		}
+		// The credential loader runs on every new connection's authentication. With files, a
+		// rotated Secret is picked up by the next connection, with no restart and no polling.
 		switch strings.ToUpper(c.SASLMechanism) {
 		case "PLAIN":
-			opts = append(opts, kgo.SASL(plain.Auth{User: c.SASLUsername, Pass: c.SASLPassword}.AsMechanism()))
+			opts = append(opts, kgo.SASL(plain.Plain(func(context.Context) (plain.Auth, error) {
+				u, p, err := c.credentials()
+				return plain.Auth{User: u, Pass: p}, err
+			})))
 		case "SCRAM-SHA-256":
-			opts = append(opts, kgo.SASL(scram.Auth{User: c.SASLUsername, Pass: c.SASLPassword}.AsSha256Mechanism()))
+			opts = append(opts, kgo.SASL(scram.Sha256(func(context.Context) (scram.Auth, error) {
+				u, p, err := c.credentials()
+				return scram.Auth{User: u, Pass: p}, err
+			})))
 		case "SCRAM-SHA-512":
-			opts = append(opts, kgo.SASL(scram.Auth{User: c.SASLUsername, Pass: c.SASLPassword}.AsSha512Mechanism()))
+			opts = append(opts, kgo.SASL(scram.Sha512(func(context.Context) (scram.Auth, error) {
+				u, p, err := c.credentials()
+				return scram.Auth{User: u, Pass: p}, err
+			})))
 		default:
 			return nil, fmt.Errorf("kafka: unsupported SASL mechanism %q (PLAIN, SCRAM-SHA-256, SCRAM-SHA-512)", c.SASLMechanism)
 		}
@@ -77,6 +99,29 @@ func (c KafkaConfig) Opts() ([]kgo.Opt, error) {
 		opts = append(opts, kgo.DialTLSConfig(tlsCfg))
 	}
 	return opts, nil
+}
+
+// credentials returns the current username and password, from files when configured.
+func (c KafkaConfig) credentials() (user, pass string, err error) {
+	user, pass = c.SASLUsername, c.SASLPassword
+	if c.SASLUsernameFile != "" {
+		b, err := os.ReadFile(c.SASLUsernameFile)
+		if err != nil {
+			return "", "", fmt.Errorf("kafka: read username file: %w", err)
+		}
+		user = strings.TrimSpace(string(b))
+	}
+	if c.SASLPasswordFile != "" {
+		b, err := os.ReadFile(c.SASLPasswordFile)
+		if err != nil {
+			return "", "", fmt.Errorf("kafka: read password file: %w", err)
+		}
+		pass = strings.TrimSpace(string(b))
+	}
+	if user == "" || pass == "" {
+		return "", "", fmt.Errorf("kafka: SASL username or password is empty")
+	}
+	return user, pass, nil
 }
 
 func (c KafkaConfig) tlsConfig() (*tls.Config, error) {

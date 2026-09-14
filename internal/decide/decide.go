@@ -11,13 +11,16 @@ import (
 )
 
 type Live struct {
-	SpecJobState   string // "running" | "suspended"
-	UpgradeMode    string // "savepoint" | "last-state" | "stateless"; the controller never changes it
-	SavepointPath  string // status.jobStatus.upgradeSavepointPath; empty after a suspend means no savepoint was taken
-	Generation     int64  // metadata.generation; a change means someone edited the spec
-	JobState       string // Flink JobStatus: RUNNING, FAILED, RESTARTING, FINISHED, ...
-	LifecycleState string // operator: CREATED, SUSPENDED, UPGRADING, DEPLOYED, STABLE, ROLLING_BACK, ROLLED_BACK, FAILED
-	ReconcileError string // status.reconciliationStatus.error
+	SpecJobState  string // "running" | "suspended"
+	UpgradeMode   string // "savepoint" | "last-state" | "stateless"; the controller never changes it
+	SavepointPath string // status.jobStatus.upgradeSavepointPath; empty after a suspend means no savepoint was taken
+	// OperatorRestarts: the deployment enables the operator's own health-check restart. Two
+	// restart mechanisms would fight, so ours steps back and says so.
+	OperatorRestarts bool
+	Generation       int64  // metadata.generation; a change means someone edited the spec
+	JobState         string // Flink JobStatus: RUNNING, FAILED, RESTARTING, FINISHED, ...
+	LifecycleState   string // operator: CREATED, SUSPENDED, UPGRADING, DEPLOYED, STABLE, ROLLING_BACK, ROLLED_BACK, FAILED
+	ReconcileError   string // status.reconciliationStatus.error
 }
 
 func (l Live) operatorBusy() bool {
@@ -151,6 +154,9 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, obs Obser
 		if r := d.unrecoverable(live); r != "" {
 			cur.Phase, cur.Reason = state.Unrecoverable, r
 			return Decision{Action: MarkUnrecoverable, Next: cur, Reason: r}
+		}
+		if p.Restart && live.OperatorRestarts && d.failing(live, cur, now) {
+			return Decision{Action: None, Next: cur, Reason: "restart left to the operator's health check"}
 		}
 		if p.Restart && d.failing(live, cur, now) {
 			switch {

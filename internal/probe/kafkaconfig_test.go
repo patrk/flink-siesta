@@ -126,3 +126,34 @@ func selfSignedPEM(t *testing.T) []byte {
 	}
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }
+
+func TestCredentialsFromFilesAreReadEachTime(t *testing.T) {
+	dir := t.TempDir()
+	uf, pf := filepath.Join(dir, "username"), filepath.Join(dir, "password")
+	if err := os.WriteFile(uf, []byte("key-1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pf, []byte("secret-1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := KafkaConfig{BootstrapServers: []string{"b:9092"}, SecurityProtocol: "SASL_SSL", SASLMechanism: "PLAIN", SASLUsernameFile: uf, SASLPasswordFile: pf}
+	if _, err := c.Opts(); err != nil {
+		t.Fatal(err)
+	}
+	u, p, err := c.credentials()
+	if err != nil || u != "key-1" || p != "secret-1" {
+		t.Fatalf("want key-1/secret-1 (trimmed), got %q/%q err=%v", u, p, err)
+	}
+	// rotation: the Secret's file changes, nothing restarts
+	if err := os.WriteFile(pf, []byte("secret-2"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, p, _ = c.credentials(); p != "secret-2" {
+		t.Fatalf("a rotated password must be read on the next authentication, got %q", p)
+	}
+	// a missing file is a configuration error at startup, not a silent empty password
+	c.SASLPasswordFile = filepath.Join(dir, "missing")
+	if _, err := c.Opts(); err == nil {
+		t.Fatal("a missing credential file must fail Opts")
+	}
+}
