@@ -86,7 +86,7 @@ func TestSourcesAreVerifiedOncePerJobInstanceAndTheJobGateHoldsTheSuspend(t *tes
 
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 	offsets := map[string]string{"in": "5"} // the broker: partition 0 ends at 5
-	r := newReconciler(c, &now, probe.Func(func(context.Context, []string) (map[string]string, bool) { return offsets, true }))
+	r := newReconciler(c, &now, probe.Func(func(context.Context, []string) (map[string]string, error) { return offsets, nil }))
 	// The job emitted up to offset 1, so three records are still pending in it.
 	job := &fakeJob{topics: []string{"other"}, reading: flink.Reading{Offsets: map[string]map[int]int64{"in": {0: 1}}, IdleFor: time.Hour}}
 	rec := &fakeRecorder{}
@@ -106,7 +106,7 @@ func TestSourcesAreVerifiedOncePerJobInstanceAndTheJobGateHoldsTheSuspend(t *tes
 		t.Fatalf("drift must be reported once and the graph read once per job: events=%v reads=%d", rec.reasons, job.sources)
 	}
 	st, _, err := r.Store.Load(ctx, fd)
-	if err != nil || st.SourcesChecked != "j1" {
+	if err != nil || st.Reported.SourcesChecked != "j1" {
 		t.Fatalf("memory must record the checked job id: %+v %v", st, err)
 	}
 
@@ -161,7 +161,7 @@ func TestAJobWithoutKafkaSourceMetricsIsReportedUnverified(t *testing.T) {
 	ctx := context.Background()
 	fd := createDeployment(t, c, "job", "savepoint")
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
-	r := newReconciler(c, &now, probe.Func(func(context.Context, []string) (map[string]string, bool) { return map[string]string{"in-0": "1"}, true }))
+	r := newReconciler(c, &now, probe.Func(func(context.Context, []string) (map[string]string, error) { return map[string]string{"in-0": "1"}, nil }))
 	job, rec := &fakeJob{}, &fakeRecorder{}
 	r.Flink, r.Recorder = job, rec
 	setJobID(t, r, fd, "j1")

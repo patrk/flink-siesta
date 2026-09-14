@@ -51,23 +51,23 @@ func TestKafkaEndOffsets(t *testing.T) {
 	}
 	defer p.Close()
 
-	before, ok := p.Observe(ctx, []string{"in"})
-	if !ok || before["in"] != "0,0" {
-		t.Fatalf("want fresh two-partition topic at 0,0, got %v ok=%v", before, ok)
+	before, err := p.Observe(ctx, []string{"in"})
+	if err != nil || before["in"] != "0,0" {
+		t.Fatalf("want fresh two-partition topic at 0,0, got %v err=%v", before, err)
 	}
 	if err := cl.ProduceSync(ctx, &kgo.Record{Topic: "in", Partition: 0, Value: []byte("v")}).FirstErr(); err != nil {
 		t.Fatal(err)
 	}
-	after, ok := p.Observe(ctx, []string{"in"})
-	if !ok || after["in"] != "1,0" {
+	after, err := p.Observe(ctx, []string{"in"})
+	if err != nil || after["in"] != "1,0" {
 		t.Fatalf("want partition 0 at 1 after one record, got %v", after)
 	}
-	if _, ok := p.Observe(ctx, []string{"nope"}); ok {
+	if _, err := p.Observe(ctx, []string{"nope"}); err == nil {
 		t.Fatal("missing topic must be unknown, not zero")
 	}
 
 	// Lag: a group that never committed is unknown, not "caught up".
-	if _, ok := p.Lag(ctx, "g", []string{"in"}); ok {
+	if _, err := p.Lag(ctx, "g", []string{"in"}); err == nil {
 		t.Fatal("group without commits must be unknown")
 	}
 	adm := kadm.NewClient(cl)
@@ -76,7 +76,7 @@ func TestKafkaEndOffsets(t *testing.T) {
 	if _, err := adm.CommitOffsets(ctx, "g", partial); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := p.Lag(ctx, "g", []string{"in"}); ok {
+	if _, err := p.Lag(ctx, "g", []string{"in"}); err == nil {
 		t.Fatal("a partition the group never committed must make lag unknown")
 	}
 	var committed kadm.Offsets
@@ -85,13 +85,13 @@ func TestKafkaEndOffsets(t *testing.T) {
 	if _, err := adm.CommitOffsets(ctx, "g", committed); err != nil {
 		t.Fatal(err)
 	}
-	if pending, ok := p.Lag(ctx, "g", []string{"in"}); !ok || pending != 0 {
-		t.Fatalf("want caught up (0, true), got (%d, %v)", pending, ok)
+	if pending, err := p.Lag(ctx, "g", []string{"in"}); err != nil || pending != 0 {
+		t.Fatalf("want caught up (0, nil), got (%d, %v)", pending, err)
 	}
 	if err := cl.ProduceSync(ctx, &kgo.Record{Topic: "in", Partition: 1, Value: []byte("v")}).FirstErr(); err != nil {
 		t.Fatal(err)
 	}
-	if pending, ok := p.Lag(ctx, "g", []string{"in"}); !ok || pending != 1 {
-		t.Fatalf("want one pending record, got (%d, %v)", pending, ok)
+	if pending, err := p.Lag(ctx, "g", []string{"in"}); err != nil || pending != 1 {
+		t.Fatalf("want one pending record, got (%d, %v)", pending, err)
 	}
 }

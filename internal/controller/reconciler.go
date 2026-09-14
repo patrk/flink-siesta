@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
@@ -45,7 +46,7 @@ type Reconciler struct {
 	Probe    probe.ActivityProbe
 	Lag      probe.LagProbe // optional; nil when the source cannot measure consumer lag
 	Flink    JobProbe       // optional; nil when the JobManager REST API is not to be used
-	jobs     sync.Map       // deployment key -> cachedJob; the graph is read once per job instance
+	memo     memo           // per-process memory that need not survive a restart
 	Decider  *decide.Decider
 	Recorder recorder.EventRecorder
 	Now      func() time.Time // injectable clock; tests freeze it
@@ -90,140 +91,225 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
+// Reconcile is one tick for one deployment, in the order the ADRs describe it: load what we
+// remember, observe the broker and the job, decide, report what changed, then act. Every step
+// is a function so that the order and the reasons can be read here without the details.
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := ctrl.LoggerFrom(ctx)
 	fd := flink.New()
 	if err := r.Get(ctx, req.NamespacedName, fd); err != nil {
 		if client.IgnoreNotFound(err) == nil {
-			metrics.Forget(req.Namespace, req.Name)
-			r.jobs.Delete(req.String())
+			r.forget(req)
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	ann := fd.GetAnnotations()
-	pol, ok := policy.Read(r.Prefix, ann)
-	if !ok {
+	pol, ours := policy.Read(r.Prefix, fd.GetAnnotations())
+	if !ours {
 		return ctrl.Result{}, nil
 	}
 	now := r.Now()
-	prev, seen, err := r.Store.Load(ctx, fd)
+	prev, seen, err := r.load(ctx, fd, now)
 	if err != nil {
 		return ctrl.Result{}, err
+	}
+	if len(pol.Problems) > 0 {
+		return r.refuseInvalidPolicy(ctx, fd, pol, prev)
+	}
+	live := flink.Live(fd)
+	obs := r.observe(ctx, req, fd, pol, &prev, live)
+	d := r.Decider.Decide(pol, prev, live, obs, now)
+	ctrl.LoggerFrom(ctx).Info("decided", gateTrace(pol, prev, live, obs, d, now)...)
+	d = r.report(fd, pol, prev, live, obs, d, now)
+	if r.DryRun {
+		would := ""
+		if d.Action != decide.None {
+			would = d.Action.String()
+			d = shadow(prev, d)
+		}
+		metrics.SetWouldAct(req.Namespace, req.Name, would)
+	}
+	r.record(req, fd, prev, d, now)
+	return r.act(ctx, fd, prev, seen, d, now)
+}
+
+// forget drops everything this process holds for a deleted deployment.
+func (r *Reconciler) forget(req ctrl.Request) {
+	metrics.Forget(req.Namespace, req.Name)
+	r.memo.forget(req.String())
+}
+
+// memo is what the process remembers between ticks and may lose on a restart: the job graph
+// read once per job instance, and the time of the last tick for suspended-time accounting.
+type memo struct {
+	mu   sync.Mutex
+	jobs map[string]cachedJob
+	seen map[string]time.Time
+}
+
+func (m *memo) job(key string) (cachedJob, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.jobs[key]
+	return c, ok
+}
+
+func (m *memo) setJob(key string, c cachedJob) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.jobs == nil {
+		m.jobs = map[string]cachedJob{}
+	}
+	m.jobs[key] = c
+}
+
+// tick records now as the last tick for key and returns the previous one, if any.
+func (m *memo) tick(key string, now time.Time) (time.Time, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.seen == nil {
+		m.seen = map[string]time.Time{}
+	}
+	last, ok := m.seen[key]
+	m.seen[key] = now
+	return last, ok
+}
+
+func (m *memo) forget(key string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.jobs, key)
+	delete(m.seen, key)
+}
+
+// load reads memory and reconciles it with the object (ADR 10). A deployment never seen before
+// starts active, now.
+func (r *Reconciler) load(ctx context.Context, fd *unstructured.Unstructured, now time.Time) (prev state.State, seen bool, err error) {
+	prev, seen, err = r.Store.Load(ctx, fd)
+	if err != nil {
+		return state.State{}, false, err
 	}
 	if !seen {
 		prev = state.Initial(now)
 	}
-	prev = repair(prev, ann[r.Prefix+"/state"], now)
-	if len(pol.Problems) > 0 {
-		// Ours, but not usable. Say why, once, and do nothing until the annotations are fixed.
-		reason := "invalid policy: " + strings.Join(pol.Problems, "; ")
-		if prev.Reason != reason {
-			r.event(fd, corev1.EventTypeWarning, "InvalidPolicy", "Validate", reason)
-			next := prev
-			next.Reason = reason
-			if err := r.Store.Save(ctx, fd, next); err != nil {
-				return ctrl.Result{}, err
-			}
-			p := patcher{Client: r.Client, Prefix: r.Prefix, Recorder: r.Recorder}
-			if err := p.annotate(ctx, fd, next); err != nil {
-				return ctrl.Result{}, err
-			}
+	return repair(prev, fd.GetAnnotations()[r.Prefix+"/state"], now), seen, nil
+}
+
+// refuseInvalidPolicy handles a deployment that is ours but not usable: say why, once, and do
+// nothing until the annotations are fixed.
+func (r *Reconciler) refuseInvalidPolicy(ctx context.Context, fd *unstructured.Unstructured, pol policy.Policy, prev state.State) (ctrl.Result, error) {
+	reason := "invalid policy: " + strings.Join(pol.Problems, "; ")
+	if prev.Reason != reason {
+		r.event(fd, corev1.EventTypeWarning, "InvalidPolicy", "Validate", reason)
+		next := prev
+		next.Reason = reason
+		if err := r.Store.Save(ctx, fd, next); err != nil {
+			return ctrl.Result{}, err
 		}
-		return ctrl.Result{RequeueAfter: r.requeue()}, nil
+		p := patcher{Client: r.Client, Prefix: r.Prefix, Recorder: r.Recorder}
+		if err := p.annotate(ctx, fd, next); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
-	live := flink.Live(fd)
+	return ctrl.Result{RequeueAfter: r.requeue()}, nil
+}
+
+// observe asks the broker, the consumer group when there is one, and the running job (ADR 12,
+// ADR 13). Everything that could not be asked stays unknown, which the decider never acts on.
+// The one piece of memory it advances is which job instance the sources were checked against.
+func (r *Reconciler) observe(ctx context.Context, req ctrl.Request, fd *unstructured.Unstructured, pol policy.Policy, prev *state.State, live decide.Live) decide.Observation {
+	log := ctrl.LoggerFrom(ctx)
 	obs := decide.Observation{}
 	pctx, cancel := context.WithTimeout(ctx, r.probeTimeout())
 	defer cancel()
-	obs.Snapshot, obs.Known = r.Probe.Observe(pctx, pol.Sources)
-	if !obs.Known {
-		metrics.ProbeErrors.WithLabelValues("offsets").Inc()
-	}
-
+	var err error
+	obs.Snapshot, err = timed("offsets", func() (map[string]string, error) { return r.Probe.Observe(pctx, pol.Sources) })
+	obs.Known = known(log, "offsets", err)
 	if pol.ConsumerGroup != "" && r.Lag != nil {
-		obs.Pending, obs.LagKnown = r.Lag.Lag(pctx, pol.ConsumerGroup, pol.Sources)
-		if !obs.LagKnown {
-			metrics.ProbeErrors.WithLabelValues("lag").Inc()
-		}
+		obs.Pending, err = timed("lag", func() (int64, error) { return r.Lag.Lag(pctx, pol.ConsumerGroup, pol.Sources) })
+		obs.LagKnown = known(log, "lag", err)
 	}
-
 	// The running job is asked two things, both only while it runs: once per job instance,
 	// whether the sources annotation matches its graph (an event, never a decision), and, with
-	// idle: job, whether it objects to sleeping (ADR 13).
+	// idle: job, whether it objects to sleeping.
 	job, jobKnown, settled := r.jobSources(pctx, req, live)
-	if settled && prev.SourcesChecked != live.JobID {
+	if settled && prev.Reported.SourcesChecked != live.JobID {
 		r.verifySources(fd, pol.Sources, job)
-		prev.SourcesChecked = live.JobID
+		prev.Reported.SourcesChecked = live.JobID
 	}
 	if pol.IdleFromJob && obs.Known {
 		obs.Job, obs.JobNote = decide.JobUnknown, "job not running or its REST API not reachable"
 		if jobKnown {
-			reading, err := r.Flink.Read(pctx, req.Namespace, req.Name, live.JobID, job)
-			if err != nil {
-				log.V(1).Info("job reading unavailable", "err", err)
-				metrics.ProbeErrors.WithLabelValues("flink-rest").Inc()
-				obs.JobNote = err.Error()
-			} else {
+			reading, err := timed("flink-rest", func() (flink.Reading, error) { return r.Flink.Read(pctx, req.Namespace, req.Name, live.JobID, job) })
+			if known(log, "flink-rest", err) {
 				obs.Job, obs.JobNote = jobGate(pol.Sources, obs.Snapshot, reading, r.requeue())
+			} else {
+				obs.JobNote = err.Error()
 			}
 		}
 	}
-	d := r.Decider.Decide(pol, prev, live, obs, now)
-	log.Info("decided", "action", d.Action.String(), "reason", d.Reason)
+	return obs
+}
 
-	// Reachability is reported once per edge, never per tick: an event when the source stops
-	// answering and one when it answers again. The flag lives in the store, not on the object.
+// report raises the events that describe an edge, never a tick, and records in the next state
+// that they were raised: reachability, a suspend completed without a savepoint, a stalled resume.
+func (r *Reconciler) report(fd *unstructured.Unstructured, pol policy.Policy, prev state.State, live decide.Live, obs decide.Observation, d decide.Decision, now time.Time) decide.Decision {
 	// Each outage is named by when it began: the events API folds identical events into a
 	// series that surfaces late, and two outages deserve two lines in kubectl describe.
 	switch {
-	case !obs.Known && !prev.SourceDown:
-		d.Next.SourceDownSince = now
+	case !obs.Known && !prev.Outage.Down:
+		d.Next.Outage.Since = now
 		r.event(fd, corev1.EventTypeWarning, "SourceUnreachable", "Probe",
 			"could not read offsets for "+strings.Join(pol.Sources, ",")+"; down since "+now.UTC().Format(time.RFC3339))
-	case obs.Known && prev.SourceDown:
+	case obs.Known && prev.Outage.Down:
 		r.event(fd, corev1.EventTypeNormal, "SourceReachable", "Probe",
-			"offsets readable again after "+now.Sub(prev.SourceDownSince).Round(time.Second).String()+"; down since "+prev.SourceDownSince.UTC().Format(time.RFC3339))
+			"offsets readable again after "+now.Sub(prev.Outage.Since).Round(time.Second).String()+"; down since "+prev.Outage.Since.UTC().Format(time.RFC3339))
 	}
-	d.Next.SourceDown = !obs.Known
+	d.Next.Outage.Down = !obs.Known
 
 	// The first time the operator reports our suspend as complete, check it took a savepoint.
 	// It falls back to last-state when a savepoint fails; the job still resumes, from an older
 	// checkpoint, and an operator on call should know.
-	if d.Next.Phase == state.Suspended && !prev.SuspendChecked && live.LifecycleState == "SUSPENDED" {
-		d.Next.SuspendChecked = true
+	if d.Next.Phase == state.Suspended && !prev.Reported.SuspendChecked && live.LifecycleState == "SUSPENDED" {
+		d.Next.Reported.SuspendChecked = true
 		if live.SavepointPath == "" {
 			r.event(fd, corev1.EventTypeWarning, "SuspendedWithoutSavepoint", "Suspend", "operator completed the suspend without a savepoint; resume will use the last checkpoint")
 		}
 	}
 	if d.Next.Phase != state.Suspended {
-		d.Next.SuspendChecked = false
+		d.Next.Reported.SuspendChecked = false
 	}
 
 	// A resume that has not produced a RUNNING job within the stall window is worth a warning:
 	// a full cluster, an image that no longer pulls, a savepoint that no longer restores.
-	if !d.Next.ResumedAt.IsZero() && !d.Next.ResumeStalledReported && now.Sub(d.Next.ResumedAt) > r.stallAfter() {
-		d.Next.ResumeStalledReported = true
+	if !d.Next.ResumedAt.IsZero() && !d.Next.Reported.ResumeStalled && now.Sub(d.Next.ResumedAt) > r.stallAfter() {
+		d.Next.Reported.ResumeStalled = true
 		r.event(fd, corev1.EventTypeWarning, "ResumeStalled", "Resume", "job not RUNNING "+r.stallAfter().String()+" after resume; check pods, image and savepoint")
 	}
 	if d.Next.ResumedAt.IsZero() {
-		d.Next.ResumeStalledReported = false
+		d.Next.Reported.ResumeStalled = false
 	}
+	return d
+}
 
-	if r.DryRun && d.Action != decide.None {
-		d = shadow(prev, d)
-	}
+// record updates the metrics for this tick (ADR 9: they observe, never decide).
+func (r *Reconciler) record(req ctrl.Request, fd *unstructured.Unstructured, prev state.State, d decide.Decision, now time.Time) {
 	metrics.SetState(req.Namespace, req.Name, string(d.Next.Phase))
+	metrics.SetHeld(req.Namespace, req.Name, d.Held)
+	r.account(req, fd, prev, d.Next, now)
 	if d.Action != decide.None {
 		metrics.Transitions.WithLabelValues(req.Namespace, req.Name, d.Action.String()).Inc()
 	}
 	if d.ResumedAfter > 0 {
 		metrics.ResumeLatency.Observe(d.ResumedAfter.Seconds())
 	}
+}
 
-	// Order matters: the object first (spec and state annotation in one patch), memory second.
-	// If the second write fails, the next tick repairs memory from the object's annotation.
+// act writes the decision: the object first, spec and state annotation in one patch, memory
+// second. If the second write fails, the next tick repairs memory from the object's annotation
+// (ADR 5, ADR 10). Nothing is written when nothing a human could see has changed.
+func (r *Reconciler) act(ctx context.Context, fd *unstructured.Unstructured, prev state.State, seen bool, d decide.Decision, now time.Time) (ctrl.Result, error) {
 	humanVisible := !seen || d.Action != decide.None || prev.Phase != d.Next.Phase || prev.Reason != d.Next.Reason
 	p := patcher{Client: r.Client, Prefix: r.Prefix, Recorder: r.Recorder}
+	var err error
 	switch {
 	case !humanVisible:
 		// nothing to write on the object
@@ -267,22 +353,19 @@ func (r *Reconciler) jobSources(ctx context.Context, req ctrl.Request, live deci
 	if r.Flink == nil || live.JobID == "" || live.JobState != "RUNNING" {
 		return flink.Sources{}, false, false
 	}
-	c, _ := r.jobs.Load(req.String())
-	cached, _ := c.(cachedJob)
+	cached, _ := r.memo.job(req.String())
 	if cached.id != live.JobID {
 		cached = cachedJob{id: live.JobID}
 	}
 	if len(cached.src.Topics) > 0 || cached.attempts >= sourceAttempts {
 		return cached.src, true, true
 	}
-	src, err := r.Flink.Sources(ctx, req.Namespace, req.Name, live.JobID)
-	if err != nil {
-		ctrl.LoggerFrom(ctx).V(1).Info("job graph unavailable", "err", err)
-		metrics.ProbeErrors.WithLabelValues("flink-rest").Inc()
+	src, err := timed("flink-rest", func() (flink.Sources, error) { return r.Flink.Sources(ctx, req.Namespace, req.Name, live.JobID) })
+	if !known(ctrl.LoggerFrom(ctx), "flink-rest", err) {
 		return flink.Sources{}, false, false
 	}
 	cached.src, cached.attempts = src, cached.attempts+1
-	r.jobs.Store(req.String(), cached)
+	r.memo.setJob(req.String(), cached)
 	return src, true, len(src.Topics) > 0 || cached.attempts >= sourceAttempts
 }
 
@@ -357,6 +440,63 @@ func sameSet(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// gateTrace is the "decided" log line: the action, and every gate's input, so one line explains
+// why a job slept or did not. Gates that are not configured are left out.
+func gateTrace(pol policy.Policy, prev state.State, live decide.Live, obs decide.Observation, d decide.Decision, now time.Time) []any {
+	kv := []any{
+		"action", d.Action.String(), "reason", d.Reason, "held", d.Held,
+		"lifecycle", live.LifecycleState, "job", live.JobState, "specState", live.SpecJobState, "upgradeMode", live.UpgradeMode,
+		"offsetsKnown", obs.Known, "idleFor", now.Sub(prev.LastActivityAt).Round(time.Second).String(), "idleAfter", pol.IdleAfter.String(),
+		"awakeFor", now.Sub(prev.AwakeSince).Round(time.Second).String(), "minAwake", pol.MinAwake.String(),
+	}
+	if pol.ConsumerGroup != "" {
+		kv = append(kv, "group", pol.ConsumerGroup, "lagKnown", obs.LagKnown, "pending", obs.Pending)
+	}
+	if pol.IdleFromJob {
+		kv = append(kv, "jobGate", obs.Job.String(), "jobNote", obs.JobNote)
+	}
+	return kv
+}
+
+// timed wraps a probe call with the duration histogram.
+func timed[T any](kind string, call func() (T, error)) (T, error) {
+	defer metrics.Timed(kind)()
+	return call()
+}
+
+// known turns a probe error into the one answer the decider understands, unknown, and keeps
+// the cause where an operator looks for it: the log line and the probe error counter.
+func known(log logr.Logger, kind string, err error) bool {
+	if err == nil {
+		return true
+	}
+	log.Info("could not ask "+kind, "err", err.Error())
+	metrics.ProbeErrors.WithLabelValues(kind).Inc()
+	return false
+}
+
+// account keeps the savings and inventory gauges. Suspended time is counted between this
+// tick and the previous one seen by this process, so a controller restart loses at most one
+// interval and never double counts; Prometheus handles the counter reset.
+func (r *Reconciler) account(req ctrl.Request, fd *unstructured.Unstructured, prev, next state.State, now time.Time) {
+	ns, name := req.Namespace, req.Name
+	if last, ok := r.memo.tick(req.String(), now); ok && prev.Phase == state.Suspended && next.Phase == state.Suspended {
+		if gap := now.Sub(last); gap > 0 {
+			metrics.SuspendedSeconds.WithLabelValues(ns, name).Add(gap.Seconds())
+		}
+	}
+	fp := flink.Footprint{}
+	since := 0.0
+	if next.Phase == state.Suspended {
+		fp = flink.FootprintOf(fd)
+		since = float64(next.SuspendedAt.Unix())
+	}
+	metrics.ReleasedCPU.WithLabelValues(ns, name).Set(fp.CPU)
+	metrics.ReleasedMemory.WithLabelValues(ns, name).Set(float64(fp.Memory))
+	metrics.SuspendedSince.WithLabelValues(ns, name).Set(since)
+	metrics.IdleSeconds.WithLabelValues(ns, name).Set(now.Sub(next.LastActivityAt).Seconds())
 }
 
 // repair reconciles memory with what the object itself says. The state annotation is written

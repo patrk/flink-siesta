@@ -24,7 +24,7 @@ func BenchmarkReconcile(b *testing.B) {
 	}
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 	offsets := map[string]string{"in-0": "5"}
-	r := newReconciler(c, &now, probe.Func(func(context.Context, []string) (map[string]string, bool) { return offsets, true }))
+	r := newReconciler(c, &now, probe.Func(func(context.Context, []string) (map[string]string, error) { return offsets, nil }))
 
 	b.ResetTimer()
 	for i := 0; b.Loop(); i++ {

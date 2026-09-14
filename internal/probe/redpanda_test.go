@@ -93,15 +93,15 @@ func TestKafkaProbeWithSASLAndTLS(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer p.Close()
-	before, ok := p.Observe(ctx, []string{"secure"})
-	if !ok || before["secure"] != "0" {
-		t.Fatalf("authenticated probe must see the fresh topic, got %v ok=%v", before, ok)
+	before, err := p.Observe(ctx, []string{"secure"})
+	if err != nil || before["secure"] != "0" {
+		t.Fatalf("authenticated probe must see the fresh topic, got %v err=%v", before, err)
 	}
 	if err := cl.ProduceSync(ctx, &kgo.Record{Topic: "secure", Partition: 0, Value: []byte("v")}).FirstErr(); err != nil {
 		t.Fatal(err)
 	}
-	if after, ok := p.Observe(ctx, []string{"secure"}); !ok || after["secure"] != "1" {
-		t.Fatalf("want secure at 1, got %v ok=%v", after, ok)
+	if after, err := p.Observe(ctx, []string{"secure"}); err != nil || after["secure"] != "1" {
+		t.Fatalf("want secure at 1, got %v err=%v", after, err)
 	}
 
 	// Wrong password must be unknown, never zero.
@@ -117,7 +117,7 @@ func TestKafkaProbeWithSASLAndTLS(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer bp.Close()
-	if _, ok := bp.Observe(ctx, []string{"secure"}); ok {
+	if _, err := bp.Observe(ctx, []string{"secure"}); err == nil {
 		t.Fatal("a failed authentication must report unknown")
 	}
 }

@@ -3,10 +3,14 @@ package controller
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"k8s.io/client-go/rest"
 
 	corev1 "k8s.io/api/core/v1"
 
@@ -26,21 +30,53 @@ import (
 // envtest runs a real kube-apiserver + etcd locally with the FlinkDeployment CRD applied
 // (make envtest downloads both). No cluster, no operator: we assert the patches we send.
 
-// startEnv boots a kube-apiserver with the FlinkDeployment CRD (make envtest). Skips without it.
+// One kube-apiserver for the whole package: booting one costs seconds, and every test starts
+// from an empty namespace anyway. envtest runs no controller manager, so nothing is garbage
+// collected on its own; startEnv deletes what the previous test left.
+var shared struct {
+	once sync.Once
+	cfg  *rest.Config
+	err  error
+	stop func() error
+}
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if shared.stop != nil {
+		_ = shared.stop()
+	}
+	os.Exit(code)
+}
+
+// startEnv returns a client on the shared kube-apiserver with the FlinkDeployment CRD
+// (make envtest). Skips without it.
 func startEnv(t testing.TB) client.Client {
 	t.Helper()
-	env := &envtest.Environment{CRDDirectoryPaths: []string{filepath.Join("..", "..", "test", "crds")}}
-	cfg, err := env.Start()
-	if err != nil {
-		t.Skipf("envtest not available: %v (run make envtest)", err)
-	}
-	t.Cleanup(func() {
-		if err := env.Stop(); err != nil {
-			t.Logf("stop envtest: %v", err)
-		}
+	shared.once.Do(func() {
+		env := &envtest.Environment{CRDDirectoryPaths: []string{filepath.Join("..", "..", "test", "crds")}}
+		shared.cfg, shared.err = env.Start()
+		shared.stop = env.Stop
 	})
-	c, err := client.New(cfg, client.Options{Scheme: scheme.Scheme})
+	if shared.err != nil {
+		t.Skipf("envtest not available: %v (run make envtest)", shared.err)
+	}
+	c, err := client.New(shared.cfg, client.Options{Scheme: scheme.Scheme})
 	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	fds := &unstructured.UnstructuredList{}
+	fds.SetGroupVersionKind(flink.GVK)
+	if err := c.List(ctx, fds, client.InNamespace("default")); err != nil {
+		t.Fatal(err)
+	}
+	for i := range fds.Items {
+		if err := c.Delete(ctx, &fds.Items[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := c.DeleteAllOf(ctx, &corev1.ConfigMap{}, client.InNamespace("default"),
+		client.MatchingLabels{"app.kubernetes.io/managed-by": "flink-siesta"}); err != nil {
 		t.Fatal(err)
 	}
 	return c
@@ -95,7 +131,7 @@ func TestReconcileSuspendsIdleAndResumesOnInput(t *testing.T) {
 
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 	offsets := map[string]string{"in-0": "5"}
-	r := newReconciler(c, &now, probe.Func(func(context.Context, []string) (map[string]string, bool) { return offsets, true }))
+	r := newReconciler(c, &now, probe.Func(func(context.Context, []string) (map[string]string, error) { return offsets, nil }))
 	key := types.NamespacedName{Name: "job", Namespace: "default"}
 	reconcile := func() {
 		t.Helper()
@@ -142,7 +178,7 @@ func TestDryRunRecordsButNeverPatches(t *testing.T) {
 	fd := createDeployment(t, c, "shadow", "savepoint")
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 	offsets := map[string]string{"in-0": "5"}
-	r := newReconciler(c, &now, probe.Func(func(context.Context, []string) (map[string]string, bool) { return offsets, true }))
+	r := newReconciler(c, &now, probe.Func(func(context.Context, []string) (map[string]string, error) { return offsets, nil }))
 	r.DryRun = true
 	key := types.NamespacedName{Name: "shadow", Namespace: "default"}
 	req := reconcileRequest(key)
@@ -172,7 +208,7 @@ func TestStatelessUpgradeModeIsRefusedOnTheServer(t *testing.T) {
 	fd := createDeployment(t, c, "stateless", "stateless")
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 	offsets := map[string]string{"in-0": "5"}
-	r := newReconciler(c, &now, probe.Func(func(context.Context, []string) (map[string]string, bool) { return offsets, true }))
+	r := newReconciler(c, &now, probe.Func(func(context.Context, []string) (map[string]string, error) { return offsets, nil }))
 	key := types.NamespacedName{Name: "stateless", Namespace: "default"}
 	req := reconcileRequest(key)
 
@@ -217,7 +253,7 @@ func TestMemoryIsRepairedFromTheObjectAfterAPartialWrite(t *testing.T) {
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 	offsets := map[string]string{"in-0": "5"}
 	fc := &failOnce{Client: c}
-	r := newReconciler(c, &now, probe.Func(func(context.Context, []string) (map[string]string, bool) { return offsets, true }))
+	r := newReconciler(c, &now, probe.Func(func(context.Context, []string) (map[string]string, error) { return offsets, nil }))
 	r.Store = store.Store{Client: fc, Reader: c, Prefix: "siesta.flink.io"}
 	key := types.NamespacedName{Name: "partial", Namespace: "default"}
 	req := reconcileRequest(key)

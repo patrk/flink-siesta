@@ -92,12 +92,12 @@ func TestSoak(t *testing.T) {
 		byName[k.Name] = worlds[i]
 	}
 	// The probe answers from the simulated world; 3% of calls are "could not ask".
-	obs := probe.Func(func(_ context.Context, sources []string) (map[string]string, bool) {
+	obs := probe.Func(func(_ context.Context, sources []string) (map[string]string, error) {
 		if rng.Float64() < 0.03 {
-			return nil, false
+			return nil, errors.New("simulated outage")
 		}
 		w := byName[sources[0]]
-		return map[string]string{sources[0] + "-0": fmt.Sprint(w.offset)}, true
+		return map[string]string{sources[0] + "-0": fmt.Sprint(w.offset)}, nil
 	})
 	newController := func() *Reconciler {
 		fc := &flakyClient{Client: c, rng: rng, rate: 0.02}

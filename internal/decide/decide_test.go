@@ -239,3 +239,32 @@ func TestLagReasonsReachTheObject(t *testing.T) {
 		t.Fatalf("Next.Reason = %q", got.Next.Reason)
 	}
 }
+
+// Held names the gate that keeps an idle job awake, so the aggregate is one gauge away.
+func TestHeldNamesTheBlockingGate(t *testing.T) {
+	d := New(rp)
+	prev := withSnap(state.Initial(t0), snap("1"))
+	later := t0.Add(15 * 24 * time.Hour)
+	cases := []struct {
+		name string
+		pol  policy.Policy
+		prev state.State
+		obs  Observation
+		held string
+	}{
+		{"min-awake", auto, awoke(later.Add(-30 * time.Minute)), seen(snap("100")), "min-awake"},
+		{"lag-unknown", withGroup(auto), prev, seen(snap("1")), "lag-unknown"},
+		{"lag-pending", withGroup(auto), prev, lag(snap("1"), 3), "lag-pending"},
+		{"job-unknown", withJobGate(auto), prev, job(snap("1"), JobUnknown), "job-unknown"},
+		{"job-busy", withJobGate(auto), prev, job(snap("1"), JobBusy), "job-busy"},
+		{"nothing holds a suspend", auto, prev, seen(snap("1")), ""},
+		{"nothing holds a job that is not idle", auto, withSnap(state.Initial(t0), snap("1")), seen(snap("2")), ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := d.Decide(c.pol, c.prev, running, c.obs, later); got.Held != c.held {
+				t.Fatalf("Held = %q, action %s, reason %q", got.Held, got.Action, got.Reason)
+			}
+		})
+	}
+}

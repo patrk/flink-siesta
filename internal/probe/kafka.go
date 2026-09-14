@@ -8,7 +8,6 @@ import (
 
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
-	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 // Kafka reads log end offsets with one admin request per Observe.
@@ -28,15 +27,13 @@ func NewKafka(opts ...kgo.Opt) (*Kafka, error) {
 
 func (k *Kafka) Close() { k.cl.Close() }
 
-func (k *Kafka) Observe(ctx context.Context, topics []string) (map[string]string, bool) {
-	log := ctrl.LoggerFrom(ctx)
+func (k *Kafka) Observe(ctx context.Context, topics []string) (map[string]string, error) {
 	ends, err := k.adm.ListEndOffsets(ctx, topics...)
 	if err == nil {
 		err = ends.Error()
 	}
 	if err != nil {
-		log.Info("end offsets unavailable", "topics", topics, "err", err.Error())
-		return nil, false
+		return nil, fmt.Errorf("end offsets for %s: %w", strings.Join(topics, ","), err)
 	}
 	// One entry per topic, end offsets joined in partition order: "topic" -> "8812,8790,9001".
 	// Ten thousand partitions fit comfortably in a ConfigMap this way; per-partition keys would not.
@@ -50,7 +47,7 @@ func (k *Kafka) Observe(ctx context.Context, topics []string) (map[string]string
 		perTopic[o.Topic] = parts
 	})
 	if len(perTopic) == 0 {
-		return nil, false
+		return nil, fmt.Errorf("no partitions for %s", strings.Join(topics, ","))
 	}
 	out := make(map[string]string, len(perTopic))
 	for topic, parts := range perTopic {
@@ -63,41 +60,39 @@ func (k *Kafka) Observe(ctx context.Context, topics []string) (map[string]string
 		}
 		out[topic] = b.String()
 	}
-	return out, true
+	return out, nil
 }
 
 // Lag sums end offset minus the group's committed offset over every partition of the topics.
 // Flink commits the next offset to read on each checkpoint, and the end offset is the next
 // offset to write, so the difference is exactly the records not yet checkpointed as consumed.
-func (k *Kafka) Lag(ctx context.Context, group string, topics []string) (int64, bool) {
-	log := ctrl.LoggerFrom(ctx)
+func (k *Kafka) Lag(ctx context.Context, group string, topics []string) (int64, error) {
 	committed, err := k.adm.FetchOffsets(ctx, group)
 	if err == nil {
 		err = committed.Error()
 	}
 	if err != nil {
-		log.Info("committed offsets unavailable", "group", group, "err", err.Error())
-		return 0, false
+		return 0, fmt.Errorf("committed offsets for group %s: %w", group, err)
 	}
 	ends, err := k.adm.ListEndOffsets(ctx, topics...)
 	if err == nil {
 		err = ends.Error()
 	}
 	if err != nil {
-		log.Info("end offsets unavailable", "topics", topics, "err", err.Error())
-		return 0, false
+		return 0, fmt.Errorf("end offsets for %s: %w", strings.Join(topics, ","), err)
 	}
 	var pending int64
-	known := true
+	var uncommitted error
 	ends.Each(func(o kadm.ListedOffset) {
 		c, ok := committed.Lookup(o.Topic, o.Partition)
 		if !ok || c.Err != nil {
-			known = false // a partition this group never committed: we cannot say it is caught up
+			// A partition this group never committed: we cannot say it is caught up.
+			uncommitted = fmt.Errorf("group %s has no committed offset for %s partition %d", group, o.Topic, o.Partition)
 			return
 		}
 		if d := o.Offset - c.At; d > 0 {
 			pending += d
 		}
 	})
-	return pending, known
+	return pending, uncommitted
 }

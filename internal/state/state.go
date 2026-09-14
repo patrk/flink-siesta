@@ -16,21 +16,32 @@ const (
 )
 
 type State struct {
-	Phase                 Phase
-	Snapshot              map[string]string
-	LastActivityAt        time.Time
-	SuspendedAt           time.Time
-	AwakeSince            time.Time
-	Restarts              RestartBudget
-	Reason                string
-	Generation            int64     // metadata.generation last seen; a newer one clears unrecoverable
-	ResumedAt             time.Time // set when we resume; cleared, and the latency reported, once the job is RUNNING
-	Pending               int64     // records the consumer group has not consumed, last time we could tell
-	SourceDown            bool      // the source could not be asked last tick; drives one event per edge
-	SourceDownSince       time.Time // when the current outage was first seen; names it in the events
-	SuspendChecked        bool      // we have seen the operator complete our suspend and checked for a savepoint
-	ResumeStalledReported bool      // ResumeStalled was raised for the current resume
-	SourcesChecked        string    // job id whose graph the sources annotation was last checked against
+	Phase          Phase
+	Snapshot       map[string]string
+	LastActivityAt time.Time
+	SuspendedAt    time.Time
+	AwakeSince     time.Time
+	Restarts       RestartBudget
+	Reason         string
+	Generation     int64     // metadata.generation last seen; a newer one clears unrecoverable
+	ResumedAt      time.Time // set when we resume; cleared, and the latency reported, once the job is RUNNING
+	Pending        int64     // records the consumer group has not consumed, last time we could tell
+	Outage         Outage    // the source could not be asked last tick, and since when
+	Reported       Reported  // what has already been said about the current situation
+}
+
+// Outage is the source's reachability as of the last tick. It drives one event per edge.
+type Outage struct {
+	Down  bool
+	Since time.Time // when the current outage was first seen; names it in the events
+}
+
+// Reported remembers which once-per-situation events have been raised, so a tick never
+// repeats them. Each field is cleared when its situation ends.
+type Reported struct {
+	SuspendChecked bool   // the operator completed our suspend and we checked for a savepoint
+	ResumeStalled  bool   // ResumeStalled was raised for the current resume
+	SourcesChecked string // job id whose graph the sources annotation was last checked against
 }
 
 func Initial(now time.Time) State {
@@ -89,11 +100,11 @@ func (s State) Data() map[string]string {
 		"resumed-at":        formatTime(s.ResumedAt),
 		"generation":        strconv.FormatInt(s.Generation, 10),
 		"pending":           strconv.FormatInt(s.Pending, 10),
-		"source-down":       strconv.FormatBool(s.SourceDown),
-		"source-down-since": formatTime(s.SourceDownSince),
-		"suspend-checked":   strconv.FormatBool(s.SuspendChecked),
-		"resume-stalled":    strconv.FormatBool(s.ResumeStalledReported),
-		"sources-checked":   s.SourcesChecked,
+		"source-down":       strconv.FormatBool(s.Outage.Down),
+		"source-down-since": formatTime(s.Outage.Since),
+		"suspend-checked":   strconv.FormatBool(s.Reported.SuspendChecked),
+		"resume-stalled":    strconv.FormatBool(s.Reported.ResumeStalled),
+		"sources-checked":   s.Reported.SourcesChecked,
 	}
 }
 
@@ -120,11 +131,11 @@ func FromData(d map[string]string) (State, bool) {
 	s.ResumedAt = parseTime(d["resumed-at"])
 	s.Generation, _ = strconv.ParseInt(d["generation"], 10, 64)
 	s.Pending, _ = strconv.ParseInt(d["pending"], 10, 64)
-	s.SourceDown, _ = strconv.ParseBool(d["source-down"])
-	s.SourceDownSince = parseTime(d["source-down-since"])
-	s.SuspendChecked, _ = strconv.ParseBool(d["suspend-checked"])
-	s.ResumeStalledReported, _ = strconv.ParseBool(d["resume-stalled"])
-	s.SourcesChecked = d["sources-checked"]
+	s.Outage.Down, _ = strconv.ParseBool(d["source-down"])
+	s.Outage.Since = parseTime(d["source-down-since"])
+	s.Reported.SuspendChecked, _ = strconv.ParseBool(d["suspend-checked"])
+	s.Reported.ResumeStalled, _ = strconv.ParseBool(d["resume-stalled"])
+	s.Reported.SourcesChecked = d["sources-checked"]
 	return s, true
 }
 

@@ -29,14 +29,68 @@ var (
 
 	ProbeErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "siesta_probe_errors_total",
-		Help: "Times a source could not be asked, by what was asked (offsets, lag).",
+		Help: "Times a source could not be asked, by what was asked (offsets, lag, flink-rest).",
 	}, []string{"kind"})
+
+	// The savings view. SuspendedSeconds accumulates wall time spent suspended; Released* hold
+	// the deployment's footprint while it is suspended and 0 otherwise, so avg_over_time of a
+	// released gauge times the window is what the cluster got back.
+	SuspendedSeconds = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "siesta_suspended_seconds_total",
+		Help: "Seconds the deployment has spent suspended by the controller.",
+	}, []string{"namespace", "name"})
+
+	SuspendedSince = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "siesta_suspended_since_timestamp_seconds",
+		Help: "Unix time the current suspension began, 0 while awake.",
+	}, []string{"namespace", "name"})
+
+	ReleasedCPU = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "siesta_released_cpu_cores",
+		Help: "CPU cores the deployment's JobManager and TaskManagers would occupy, while it is suspended; 0 otherwise.",
+	}, []string{"namespace", "name"})
+
+	ReleasedMemory = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "siesta_released_memory_bytes",
+		Help: "Memory the deployment's JobManager and TaskManagers would occupy, while it is suspended; 0 otherwise.",
+	}, []string{"namespace", "name"})
+
+	// The inventory view, for a dry run on an existing namespace: how idle is each job, and
+	// what would the controller do right now if it were allowed to.
+	IdleSeconds = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "siesta_idle_seconds",
+		Help: "Seconds since the last observed input on the deployment's sources.",
+	}, []string{"namespace", "name"})
+
+	WouldAct = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "siesta_dry_run_would_act",
+		Help: "1 for the action the controller would take now in dry-run (suspend, resume, restart, refuse), 0 otherwise.",
+	}, []string{"namespace", "name", "action"})
+
+	// HeldAwake is 1 for the gate that keeps an idle job awake this tick, so
+	// sum by (gate) (siesta_held_awake) is "why are idle jobs not sleeping" for the namespace.
+	HeldAwake = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "siesta_held_awake",
+		Help: "1 for the gate holding an idle deployment awake (min-awake, lag-unknown, lag-pending, job-unknown, job-busy), 0 otherwise.",
+	}, []string{"namespace", "name", "gate"})
+
+	ProbeDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "siesta_probe_duration_seconds",
+		Help:    "Round trip of one probe call, by what was asked (offsets, lag, flink-rest).",
+		Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
+	}, []string{"kind"})
+)
+
+var (
+	dryRunActions = []string{"suspend", "resume", "restart", "refuse", "mark-unrecoverable"}
+	gates         = []string{"min-awake", "lag-unknown", "lag-pending", "job-unknown", "job-busy"}
 )
 
 var states = []string{"active", "suspended", "unrecoverable"}
 
 func init() {
-	metrics.Registry.MustRegister(State, Transitions, ResumeLatency, ProbeErrors)
+	metrics.Registry.MustRegister(State, Transitions, ResumeLatency, ProbeErrors,
+		SuspendedSeconds, SuspendedSince, ReleasedCPU, ReleasedMemory, IdleSeconds, WouldAct, HeldAwake, ProbeDuration)
 }
 
 // SetState records the current state and clears the other two for this deployment.
@@ -50,8 +104,40 @@ func SetState(namespace, name, current string) {
 	}
 }
 
+// SetHeld records which gate holds the deployment awake, clearing the others.
+func SetHeld(namespace, name, gate string) {
+	for _, g := range gates {
+		v := 0.0
+		if g == gate {
+			v = 1
+		}
+		HeldAwake.WithLabelValues(namespace, name, g).Set(v)
+	}
+}
+
+// Timed observes one probe round trip: defer metrics.Timed("offsets")() around the call.
+func Timed(kind string) func() {
+	t := prometheus.NewTimer(ProbeDuration.WithLabelValues(kind))
+	return func() { t.ObserveDuration() }
+}
+
+// SetWouldAct records the action a dry run would take, clearing the others.
+func SetWouldAct(namespace, name, action string) {
+	for _, a := range dryRunActions {
+		v := 0.0
+		if a == action {
+			v = 1
+		}
+		WouldAct.WithLabelValues(namespace, name, a).Set(v)
+	}
+}
+
 // Forget drops a deleted deployment's series so dashboards do not show ghosts.
 func Forget(namespace, name string) {
-	State.DeletePartialMatch(prometheus.Labels{"namespace": namespace, "name": name})
-	Transitions.DeletePartialMatch(prometheus.Labels{"namespace": namespace, "name": name})
+	labels := prometheus.Labels{"namespace": namespace, "name": name}
+	for _, v := range []*prometheus.GaugeVec{State, SuspendedSince, ReleasedCPU, ReleasedMemory, IdleSeconds, WouldAct, HeldAwake} {
+		v.DeletePartialMatch(labels)
+	}
+	Transitions.DeletePartialMatch(labels)
+	SuspendedSeconds.DeletePartialMatch(labels)
 }

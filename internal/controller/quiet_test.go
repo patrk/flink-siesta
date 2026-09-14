@@ -48,9 +48,9 @@ func TestQuietTickCostsThreeReadsOneProbeAndNoWrites(t *testing.T) {
 	cc := &countingClient{Client: c}
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 	probes := 0
-	r := newReconciler(cc, &now, probe.Func(func(context.Context, []string) (map[string]string, bool) {
+	r := newReconciler(cc, &now, probe.Func(func(context.Context, []string) (map[string]string, error) {
 		probes++
-		return map[string]string{"in-0": "5"}, true
+		return map[string]string{"in-0": "5"}, nil
 	}))
 	r.Store = store.Store{Client: cc, Reader: cc, Prefix: "siesta.flink.io"}
 	req := reconcileRequest(types.NamespacedName{Name: "quiet", Namespace: "default"})
