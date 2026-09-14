@@ -99,7 +99,7 @@ The prefix is configurable through `siesta.annotation-prefix` and defaults to `s
 | Annotation | Written by | Value |
 |---|---|---|
 | `<prefix>/mode` | you | `auto` or `off` |
-| `<prefix>/sources` | you | comma-separated topic names |
+| `<prefix>/sources` | you | comma-separated topic names, or `auto` to learn them from the running job and remember them |
 | `<prefix>/consumer-group` | you | optional. When set, idle also means the group has consumed everything. |
 | `<prefix>/idle` | you | optional. `job` adds the running job's own view as a last gate: it may hold a suspend while it still has records to emit or emitted one within the last poll interval. Needs no consumer group. |
 | `<prefix>/idle-after` | you | a duration such as `336h` or `14d` |
@@ -151,6 +151,7 @@ A private CA goes in a Secret referenced by `kafka.tls.existingSecret` under the
 - **A stalled resume or suspend is reported.** If a resumed job is not RUNNING after `--resume-stall-after`, ten minutes by default, `ResumeStalled` is raised once. The usual causes are a full cluster, a missing image or a savepoint that no longer restores. The mirror image, an operator that has not completed a suspend within the same window, raises `SuspendStalled` once.
 - **A refusal is said once.** A `stateless` job that becomes idle gets one `Refused` event and one line in the reason, not one per minute, and counts as one transition.
 - **Removing the policy releases the job.** Delete the `mode` annotation and the controller removes its two annotations and the ConfigMap, with a `Released` event. Nothing stale is left behind.
+- **Sources can be learned instead of written.** With `sources: auto` the controller reads the running job's Kafka topics once per job instance, remembers them in the ConfigMap with a `SourcesLearned` event, and watches those. Until the job has run once under the controller nothing is known and nothing happens, and the reason says so. A job whose topics change while it sleeps wakes on the old list and teaches the new one on that run. The written list stays the default: it is a contract a human can read, and it lets a job read a topic it should not be woken by.
 - **The sources annotation is checked against the job.** While a job runs, its JobManager knows which topics its Kafka sources read. Once per job instance the controller compares that with `sources` and raises `SourcesVerified`, `SourcesDrift` or, for a job without Kafka source metrics, `SourcesUnverified`. It never edits the annotation. A job may read a topic you do not want it woken by, and a sleeping job has no JobManager to ask.
 - **The job may object, never decide.** With `idle: job`, the controller compares each declared partition's end offset with the last offset the job's reader emitted, which is the position a savepoint would record, and reads the source's own idle time. Records still to emit, or a record emitted within the last poll interval, hold the suspend with `job busy` on the object. An unreachable REST API holds it with `job unknown`, which is how a missing network policy shows up. Nothing in this view can wake a job, since a suspended job has no JobManager. This needs no consumer group, no checkpointing and no group ACL. Both features need egress from the controller to the JobManager pods on port 8081, the operator's `<deployment>-rest` Service. `config.flinkRest: false` switches them off.
 - **A suspend without a savepoint is reported.** If the savepoint fails, the operator falls back to its last checkpoint and still reports the suspend as done. Siesta raises `SuspendedWithoutSavepoint` once, and the resume still works from that checkpoint. A common cause is that the operator asks for canonical savepoints by default and some operators cannot produce them, the Print sink on Flink 2.x for one. If the job only ever resumes on the same state backend, set `kubernetes.operator.savepoint.format.type: NATIVE` in its `flinkConfiguration`.
@@ -216,6 +217,17 @@ Release images and charts carry SLSA provenance and an SBOM, and they are signed
 The operator's own [autoscaler](https://nightlies.apache.org/flink/flink-kubernetes-operator-docs-main/docs/custom-resource/autoscaler/) right-sizes a running job by vertex, and KEDA with the Kafka scaler can scale the TaskManagers of a job in [reactive mode](https://nightlies.apache.org/flink/flink-docs-stable/docs/deployment/elastic_scaling/) by consumer lag. Both answer "how big should this job be while it runs". Neither reaches zero: the autoscaler keeps at least one running JobManager, and a reactive-mode job with no TaskManagers fails rather than pausing. KEDA cannot drive a FlinkDeployment directly either, because it thinks in replicas through the `/scale` subresource and a suspend is a savepoint followed by a teardown.
 
 Siesta answers the other question, "should this job be running at all", and composes with both: a job can be autoscaled while awake and suspended while idle.
+
+## Upgrading
+
+- **From 0.2.x.** `helm upgrade` is enough. The Role gains `patch` on events, the admission objects are renamed to include the namespace, and memory in the ConfigMaps is read as before.
+- **From 0.1.x.** 0.1 kept its memory in annotations on the FlinkDeployment. 0.3.0 neither reads nor removes them. Remove them once before upgrading, and every job starts with a fresh idle window:
+
+      kubectl annotate flinkdeployments --all -n <namespace> \
+        siesta.flink.io/offsets- siesta.flink.io/restarts- siesta.flink.io/last-activity-at- \
+        siesta.flink.io/suspended-at- siesta.flink.io/awake-since- siesta.flink.io/generation- siesta.flink.io/resumed-at-
+
+  A job that 0.1 had suspended stays suspended and is resumed on the next record, as before.
 
 ## Status
 

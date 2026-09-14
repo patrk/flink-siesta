@@ -12,6 +12,8 @@ owned by the deployment (garbage-collected with it), with one readable key per f
 without a cache and watched by nobody. State written by earlier versions as annotations is
 read once and migrated.
 
+**Amended in 0.3.0.** The migration from 0.1.x annotations was removed after one release. A 0.1.x cluster cleans its annotations once by hand, see the README's upgrade section.
+
 **Consequences.** The operator sees an external write only when a transition or a reason
 change happens. Debugging is two commands: `kubectl describe
 flinkdeployment` for state, reason and events; `kubectl get cm siesta-<name> -o yaml` for

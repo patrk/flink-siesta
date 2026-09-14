@@ -12,7 +12,7 @@ metrics are the same from Flink 1.20 through 2.2.
 
 **Decision.** Two uses, one client, both off the critical path of the decision:
 
-1. **Sources are verified, not derived.** Once per job instance the controller lists the
+1. **Sources are verified, not derived** (ADR 14 adds `sources: auto`, which derives and remembers). Once per job instance the controller lists the
    source vertices' metrics, collects the topics named in them and compares the set with the
    `sources` annotation. A match raises `SourcesVerified` once, a mismatch `SourcesDrift`
    once, and a job that exposes no Kafka source at all is reported the same way. Nothing

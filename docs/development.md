@@ -1,6 +1,6 @@
 # Development
 
-Every design decision is recorded in [`adr/`](adr/), one file per decision. Read them in order; the later ones amend the earlier ones where the code moved on.
+Every design decision is recorded in [`adr/`](adr/), one file per decision. Read them in order. The later ones amend the earlier ones where the code moved on.
 
 ## Built with
 
@@ -13,9 +13,9 @@ Go, controller-runtime and franz-go. The image is about 20 MB and starts in unde
     make envtest   the reconciler on a real kube-apiserver with the FlinkDeployment CRD
     make e2e       KinD with the Flink operator, Kafka and a Kafka-reading job built from e2e/job. Five
                    scenarios, each standing on its own: suspend, savepoint restore and resume with a
-                   controller restart in between; sources verified against the job, drift reported and a
-                   burst held back by the job gate; a Kafka outage and a recreated topic; the admission
-                   policy and garbage collection; the restart budget. Each runs in its own namespace,
+                   controller restart in between, sources verified against the job, drift reported and a
+                   burst held back by the job gate, a Kafka outage and a recreated topic, the admission
+                   policy and garbage collection, the restart budget, sources learned from the job. Each runs in its own namespace,
                    E2E_PARALLEL at a time (default 2, 1 for a small machine), or one alone:
                    make e2e E2E_SCENARIO=outage. CI runs them on separate clusters.
     make bench     one worker over 200 deployments on envtest, reports reconciles per minute

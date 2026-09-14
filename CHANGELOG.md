@@ -2,6 +2,9 @@
 
 ## Unreleased, 0.3.0
 
+- `sources: auto` learns the topics from the running job and remembers them, ADR 14. The written list stays the default.
+- The job gate now lives in the decider on typed end offsets from the probe, so the reconciler only observes and acts, and the state-space test enumerates real readings.
+- The controller no longer reads or removes the annotations 0.1.x wrote. The README's upgrade section has the one-line cleanup for a 0.1.x cluster.
 - `idle: job` adds the running job's own view as a last gate, ADR 13: exact pending from the reader's emitted offsets against the broker's end offsets, plus the source's idle time. It may hold a suspend, never cause one or wake a job.
 - The `sources` annotation is verified against the running job's Kafka sources once per job instance: `SourcesVerified`, `SourcesDrift` or `SourcesUnverified` events. Never corrected.
 - `--flink-rest` and `--flink-rest-port` flags, `config.flinkRest` chart value. The controller now dials the operator's `<deployment>-rest` Service, and `siesta_probe_errors_total` has a `flink-rest` kind.
