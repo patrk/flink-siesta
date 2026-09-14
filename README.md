@@ -77,7 +77,7 @@ A private CA goes in a Secret referenced by `kafka.tls.existingSecret` under the
 - **Manual changes are respected.** A job someone else suspends is left alone and marked `suspended outside siesta`. A job someone else resumes is treated as awake with a fresh idle window.
 - **Clearing `unrecoverable`.** Fix the cause, then edit the FlinkDeployment spec. A new generation resets the state and the restart budget, and a Warning event marks the change.
 - **Invalid annotations are reported, not guessed.** A bad duration, an unknown mode or a missing `sources` raises `InvalidPolicy` once, and the job is left untouched until you fix it.
-- **Kafka outages are reported once.** When the broker becomes unreachable the controller raises `SourceUnreachable` a single time, does nothing until it is back, and then raises `SourceReachable` once. The messages name when the outage began and how long it lasted, so two outages are two events rather than one event with a count.
+- **Kafka outages are reported once.** When the broker becomes unreachable the controller raises `SourceUnreachable` a single time, does nothing until it is back, and then raises `SourceReachable` once. The messages name when the outage began and how long it lasted. Kubernetes may fold a repeat into the first event with a count, so read the count as well as the list.
 - **A recreated topic counts as input.** Offsets are compared for equality, not for growth. A topic deleted and recreated starts at offset 0, which differs from what was remembered, so a suspended job reading it is resumed. It restores its savepoint and its Kafka source handles the out-of-range position with its reset strategy.
 - **Credential rotation needs no restart.** The chart mounts the SASL Secret as files and the controller reads them on every new connection, so a rotated Secret is picked up as soon as the kubelet refreshes the mount and the next connection authenticates. When running the binary outside the chart with `KAFKA_SASL_USERNAME` and `KAFKA_SASL_PASSWORD` in the environment, a rotation still needs a restart.
 - **The operator's own restart wins.** If a deployment enables `kubernetes.operator.cluster.health-check.enabled`, Siesta leaves failed jobs to the operator and says `restart left to the operator's health check`, so the two never fight.
@@ -120,10 +120,13 @@ The ConfigMaps Siesta creates are owned by the deployment and labelled `app.kube
     make test      the pure decision table, the state codec and the store, no Docker needed
     make it        the Kafka probe against Confluent's image, and against Redpanda with SASL_SSL, SCRAM and TLS
     make envtest   the reconciler on a real kube-apiserver with the FlinkDeployment CRD
-    make e2e       KinD with the Flink operator, Kafka and a Kafka-reading job built from e2e/job: suspend,
-                   savepoint restore, resume, sources verified against the job and drift reported, a burst
-                   held back by pendingRecords, a controller restart mid-flight, a Kafka outage, the
-                   restart budget, garbage collection
+    make e2e       KinD with the Flink operator, Kafka and a Kafka-reading job built from e2e/job. Five
+                   scenarios, each standing on its own: suspend, savepoint restore and resume with a
+                   controller restart in between; sources verified against the job, drift reported and a
+                   burst held back by the job gate; a Kafka outage and a recreated topic; the admission
+                   policy and garbage collection; the restart budget. Each runs in its own namespace,
+                   E2E_PARALLEL at a time (default 2, 1 for a small machine), or one alone:
+                   make e2e E2E_SCENARIO=outage. CI runs them on separate clusters.
     make bench     one worker over 200 deployments on envtest, reports reconciles per minute
     make soak      a simulated soak: sources flapping, probes failing, writes dropped, a fake operator
                    reacting late, and the controller crashed every 400 ticks. Asserts consistency and
@@ -158,7 +161,14 @@ Metrics are exposed on `:8080/metrics` next to controller-runtime's own reconcil
 | `siesta_deployment_state{namespace,name,state}` | gauge | which deployments are suspended right now |
 | `siesta_transitions_total{namespace,name,action}` | counter | how often the controller acts, and whether a job is flapping |
 | `siesta_resume_latency_seconds` | histogram | how long from the input that woke a job until it reports RUNNING |
-| `siesta_probe_errors_total{kind}` | counter | how often Kafka could not be asked |
+| `siesta_probe_errors_total{kind}` | counter | how often Kafka or the job's REST API could not be asked |
+| `siesta_suspended_seconds_total{namespace,name}` | counter | how long each job has slept, in total |
+| `siesta_suspended_since_timestamp_seconds{namespace,name}` | gauge | when the current sleep began, 0 while awake |
+| `siesta_released_cpu_cores{namespace,name}`, `siesta_released_memory_bytes{namespace,name}` | gauge | the JobManager and TaskManager footprint the cluster has back while a job sleeps, 0 while awake |
+| `siesta_idle_seconds{namespace,name}` | gauge | seconds since the last input, for every managed job, awake or not |
+| `siesta_dry_run_would_act{namespace,name,action}` | gauge | in dry-run, what the controller would do right now |
+
+The last two turn a dry run on an existing namespace into an inventory: sort by `siesta_idle_seconds` and read `siesta_dry_run_would_act{action="suspend"}` to see which jobs would sleep, and `action="refuse"` to see which are idle but run `stateless`. The savings over a month are `sum(avg_over_time(siesta_released_cpu_cores[30d])) * 720` core-hours, and the same with memory.
 
 Metrics describe what the controller did. Nothing in the controller reads them. They observe, they never decide. Two alerts are worth having: `siesta_probe_errors_total` rising for ten minutes, and any transition with `action="mark-unrecoverable"`.
 
@@ -177,7 +187,7 @@ The image and the chart are published to the GitHub Container Registry on every 
       --set kafka.bootstrapServers=... --set kafka.securityProtocol=SASL_SSL \
       --set kafka.sasl.existingSecret=kafka-auth
 
-The chart's `image.tag` defaults to its `appVersion`, so the chart and the image always move together.
+The chart's `image.tag` defaults to its `appVersion`, so the chart and the image always move together. On a locked-down cluster the values you will reach for are `image.digest`, `imagePullSecrets`, `podLabels`, `nodeSelector` and `tolerations`, `priorityClassName`, `serviceAccount.annotations` for workload identity, `admissionPolicy.enabled: false` when the tenant may not create cluster-scoped objects, and `extraObjects` for the network policy lines the README names, rendered through `tpl` so they can use the release name. Two replicas prefer different nodes by default.
 
 ## Try it
 
