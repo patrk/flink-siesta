@@ -42,7 +42,7 @@ The prefix is configurable through `siesta.annotation-prefix` and defaults to `s
 | `<prefix>/sources` | you | comma-separated topic names |
 | `<prefix>/source-type` | you | `kafka`, the default. Other probes can be added without touching the core. |
 | `<prefix>/consumer-group` | you | optional. When set, idle also means the group has consumed everything. |
-| `<prefix>/lag` | you | optional. `job` makes idle also mean the running job reports zero `pendingRecords` on its sources. Needs no consumer group. |
+| `<prefix>/idle` | you | optional. `job` adds the running job's own view as a last gate: it may hold a suspend while it still has records to emit or emitted one within the last poll interval. Needs no consumer group. |
 | `<prefix>/idle-after` | you | a duration such as `336h` or `14d` |
 | `<prefix>/min-awake` | you | a duration, default `1h` |
 | `<prefix>/restart` | you | `auto` or `off` |
@@ -77,12 +77,13 @@ A private CA goes in a Secret referenced by `kafka.tls.existingSecret` under the
 - **Manual changes are respected.** A job someone else suspends is left alone and marked `suspended outside siesta`. A job someone else resumes is treated as awake with a fresh idle window.
 - **Clearing `unrecoverable`.** Fix the cause, then edit the FlinkDeployment spec. A new generation resets the state and the restart budget, and a Warning event marks the change.
 - **Invalid annotations are reported, not guessed.** A bad duration, an unknown mode or a missing `sources` raises `InvalidPolicy` once, and the job is left untouched until you fix it.
-- **Kafka outages are reported once.** When the broker becomes unreachable the controller raises `SourceUnreachable` a single time, does nothing until it is back, and then raises `SourceReachable` once.
+- **Kafka outages are reported once.** When the broker becomes unreachable the controller raises `SourceUnreachable` a single time, does nothing until it is back, and then raises `SourceReachable` once. The messages name when the outage began and how long it lasted, so two outages are two events rather than one event with a count.
+- **A recreated topic counts as input.** Offsets are compared for equality, not for growth. A topic deleted and recreated starts at offset 0, which differs from what was remembered, so a suspended job reading it is resumed. It restores its savepoint and its Kafka source handles the out-of-range position with its reset strategy.
 - **Credential rotation needs no restart.** The chart mounts the SASL Secret as files and the controller reads them on every new connection, so a rotated Secret is picked up as soon as the kubelet refreshes the mount and the next connection authenticates. When running the binary outside the chart with `KAFKA_SASL_USERNAME` and `KAFKA_SASL_PASSWORD` in the environment, a rotation still needs a restart.
 - **The operator's own restart wins.** If a deployment enables `kubernetes.operator.cluster.health-check.enabled`, Siesta leaves failed jobs to the operator and says `restart left to the operator's health check`, so the two never fight.
 - **A stalled resume is reported.** If a resumed job is not RUNNING after `--resume-stall-after`, ten minutes by default, `ResumeStalled` is raised once. The usual causes are a full cluster, a missing image or a savepoint that no longer restores.
 - **The sources annotation is checked against the job.** While a job runs, its JobManager knows which topics its Kafka sources read. Once per job instance the controller compares that with `sources` and raises `SourcesVerified`, `SourcesDrift` or, for a job without Kafka source metrics, `SourcesUnverified`. It never edits the annotation. A job may read a topic you do not want it woken by, and a sleeping job has no JobManager to ask.
-- **Caught up, as the job sees it.** `lag: job` reads the same `pendingRecords` gauge the operator's autoscaler uses, so it works without a consumer group, without checkpointing and without a group ACL. If the REST API is unreachable, lag is unknown and the job is not suspended. The reason says `lag unknown in the job`, which is how a missing network policy shows up. Both features need egress from the controller to the JobManager pods on port 8081, the operator's `<deployment>-rest` Service. `config.flinkRest: false` switches them off.
+- **The job may object, never decide.** With `idle: job`, the controller compares each declared partition's end offset with the last offset the job's reader emitted, which is the position a savepoint would record, and reads the source's own idle time. Records still to emit, or a record emitted within the last poll interval, hold the suspend with `job busy` on the object. An unreachable REST API holds it with `job unknown`, which is how a missing network policy shows up. Nothing in this view can wake a job, since a suspended job has no JobManager. This needs no consumer group, no checkpointing and no group ACL. Both features need egress from the controller to the JobManager pods on port 8081, the operator's `<deployment>-rest` Service. `config.flinkRest: false` switches them off.
 - **A suspend without a savepoint is reported.** If the savepoint fails, the operator falls back to its last checkpoint and still reports the suspend as done. Siesta raises `SuspendedWithoutSavepoint` once, and the resume still works from that checkpoint. A common cause is that the operator asks for canonical savepoints by default and some operators cannot produce them, the Print sink on Flink 2.x for one. If the job only ever resumes on the same state backend, set `kubernetes.operator.savepoint.format.type: NATIVE` in its `flinkConfiguration`.
 
 ## Limits
@@ -90,7 +91,7 @@ A private CA goes in a Secret referenced by `kafka.tls.existingSecret` under the
 These follow from what suspending a Flink job means, and Siesta cannot remove them.
 
 - **Processing time stops while a job is suspended.** Processing-time timers and windows fire late, all at once, after a resume. Event-time jobs are unaffected. Only suspend jobs whose semantics survive a pause.
-- **Group lag needs checkpointing.** Flink commits consumer-group offsets only on checkpoints. If you set `consumer-group` on a job that does not checkpoint, the lag is never known and the job is never suspended. The reason will say `lag unknown`. `lag: job` does not have this limit, but a job without checkpointing has no position to resume from anyway.
+- **Group lag needs checkpointing.** Flink commits consumer-group offsets only on checkpoints. If you set `consumer-group` on a job that does not checkpoint, the lag is never known and the job is never suspended. The reason will say `lag unknown`. `idle: job` does not have this limit, but a job without checkpointing has no position to resume from anyway.
 - **Application mode only.** `FlinkSessionJob` has no pods of its own to take down and no lifecycle state to key on. Run one controller instance per namespace. Two instances in one namespace would share ConfigMap names and the leader lease.
 
 - **Only the declared sources wake a job.** A job that also reads a non-Kafka source, such as a broadcast stream or a JDBC lookup, is not resumed by activity there. Drift between the annotation and the job's Kafka sources is reported, see above, but not corrected.
@@ -119,8 +120,10 @@ The ConfigMaps Siesta creates are owned by the deployment and labelled `app.kube
     make test      the pure decision table, the state codec and the store, no Docker needed
     make it        the Kafka probe against Confluent's image, and against Redpanda with SASL_SSL, SCRAM and TLS
     make envtest   the reconciler on a real kube-apiserver with the FlinkDeployment CRD
-    make e2e       KinD with the Flink operator and Kafka: suspend, savepoint restore, resume,
-                   a controller restart mid-flight, a Kafka outage, the restart budget, garbage collection
+    make e2e       KinD with the Flink operator, Kafka and a Kafka-reading job built from e2e/job: suspend,
+                   savepoint restore, resume, sources verified against the job and drift reported, a burst
+                   held back by pendingRecords, a controller restart mid-flight, a Kafka outage, the
+                   restart budget, garbage collection
     make bench     one worker over 200 deployments on envtest, reports reconciles per minute
     make soak      a simulated soak: sources flapping, probes failing, writes dropped, a fake operator
                    reacting late, and the controller crashed every 400 ticks. Asserts consistency and
@@ -182,7 +185,7 @@ The chart's `image.tag` defaults to its `appVersion`, so the chart and the image
     make test         # the pure decision tests, no Docker and no cluster
     make it           # the Kafka probe against a Testcontainers broker, needs Docker
     make envtest      # the controller against a local kube-apiserver with the FlinkDeployment CRD
-    make kind-up e2e  # KinD with the Flink operator and a single-node Kafka, real suspend and resume
+    make kind-up e2e  # KinD with the Flink operator, a single-node Kafka and a Kafka-reading job, real suspend and resume
 
 ## Built with
 

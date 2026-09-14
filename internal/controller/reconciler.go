@@ -2,6 +2,8 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -33,7 +35,7 @@ const (
 // and the records they have not fetched yet. nil switches both uses off.
 type JobProbe interface {
 	Sources(ctx context.Context, namespace, name, jobID string) (flink.Sources, error)
-	Pending(ctx context.Context, namespace, name, jobID string, src flink.Sources) (int64, error)
+	Read(ctx context.Context, namespace, name, jobID string, src flink.Sources) (flink.Reading, error)
 }
 
 type Reconciler struct {
@@ -138,45 +140,32 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		metrics.ProbeErrors.WithLabelValues("offsets").Inc()
 	}
 
+	if pol.ConsumerGroup != "" && r.Lag != nil {
+		obs.Pending, obs.LagKnown = r.Lag.Lag(pctx, pol.ConsumerGroup, pol.Sources)
+		if !obs.LagKnown {
+			metrics.ProbeErrors.WithLabelValues("lag").Inc()
+		}
+	}
+
 	// The running job is asked two things, both only while it runs: once per job instance,
 	// whether the sources annotation matches its graph (an event, never a decision), and, with
-	// lag: job, how many records its sources still have to fetch.
-	job, jobKnown := r.jobSources(pctx, req, live)
-	if jobKnown && prev.SourcesChecked != live.JobID {
+	// idle: job, whether it objects to sleeping (ADR 13).
+	job, jobKnown, settled := r.jobSources(pctx, req, live)
+	if settled && prev.SourcesChecked != live.JobID {
 		r.verifySources(fd, pol.Sources, job)
 		prev.SourcesChecked = live.JobID
 	}
-
-	// "Caught up" can come from the consumer group, from the job, or both; every requested
-	// source must be known and every one must be zero.
-	if pol.ConsumerGroup != "" || pol.LagFromJob {
-		obs.LagKnown = true
-		if pol.ConsumerGroup != "" {
-			n, ok := int64(0), false
-			if r.Lag != nil {
-				n, ok = r.Lag.Lag(pctx, pol.ConsumerGroup, pol.Sources)
-			}
-			if !ok {
-				metrics.ProbeErrors.WithLabelValues("lag").Inc()
-			}
-			obs.LagKnown = obs.LagKnown && ok
-			obs.Pending = max(obs.Pending, n)
-		}
-		if pol.LagFromJob {
-			n, ok := int64(0), false
-			if jobKnown {
-				var err error
-				if n, err = r.Flink.Pending(pctx, req.Namespace, req.Name, live.JobID, job); err != nil {
-					log.V(1).Info("pendingRecords unavailable", "err", err)
-				} else {
-					ok = true
-				}
-			}
-			if !ok {
+	if pol.IdleFromJob && obs.Known {
+		obs.Job, obs.JobNote = decide.JobUnknown, "job not running or its REST API not reachable"
+		if jobKnown {
+			reading, err := r.Flink.Read(pctx, req.Namespace, req.Name, live.JobID, job)
+			if err != nil {
+				log.V(1).Info("job reading unavailable", "err", err)
 				metrics.ProbeErrors.WithLabelValues("flink-rest").Inc()
+				obs.JobNote = err.Error()
+			} else {
+				obs.Job, obs.JobNote = jobGate(pol.Sources, obs.Snapshot, reading, r.requeue())
 			}
-			obs.LagKnown = obs.LagKnown && ok
-			obs.Pending = max(obs.Pending, n)
 		}
 	}
 	d := r.Decider.Decide(pol, prev, live, obs, now)
@@ -184,11 +173,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	// Reachability is reported once per edge, never per tick: an event when the source stops
 	// answering and one when it answers again. The flag lives in the store, not on the object.
+	// Each outage is named by when it began: the events API folds identical events into a
+	// series that surfaces late, and two outages deserve two lines in kubectl describe.
 	switch {
 	case !obs.Known && !prev.SourceDown:
-		r.event(fd, corev1.EventTypeWarning, "SourceUnreachable", "Probe", "could not read offsets for "+strings.Join(pol.Sources, ","))
+		d.Next.SourceDownSince = now
+		r.event(fd, corev1.EventTypeWarning, "SourceUnreachable", "Probe",
+			"could not read offsets for "+strings.Join(pol.Sources, ",")+"; down since "+now.UTC().Format(time.RFC3339))
 	case obs.Known && prev.SourceDown:
-		r.event(fd, corev1.EventTypeNormal, "SourceReachable", "Probe", "offsets readable again")
+		r.event(fd, corev1.EventTypeNormal, "SourceReachable", "Probe",
+			"offsets readable again after "+now.Sub(prev.SourceDownSince).Round(time.Second).String()+"; down since "+prev.SourceDownSince.UTC().Format(time.RFC3339))
 	}
 	d.Next.SourceDown = !obs.Known
 
@@ -256,27 +250,81 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 }
 
 type cachedJob struct {
-	id  string
-	src flink.Sources
+	id       string
+	src      flink.Sources
+	attempts int
 }
 
-// jobSources returns what the running job says about its sources, read once per job id and
-// cached in memory. ok=false when there is no REST probe, no running job, or the call failed.
-func (r *Reconciler) jobSources(ctx context.Context, req ctrl.Request, live decide.Live) (flink.Sources, bool) {
+// sourceAttempts is how many ticks a running job gets to show its Kafka source metrics before
+// the absence counts as an answer. The reader registers them when it receives its splits, a
+// few seconds after the job reports RUNNING, so the first tick is often too early.
+const sourceAttempts = 3
+
+// jobSources returns what the running job says about its sources. ok=false when there is no
+// REST probe, no running job, or the call failed. settled=true once topics were found, or the
+// job had its chances: only then is the answer worth an event, and it is cached per job id.
+func (r *Reconciler) jobSources(ctx context.Context, req ctrl.Request, live decide.Live) (src flink.Sources, ok, settled bool) {
 	if r.Flink == nil || live.JobID == "" || live.JobState != "RUNNING" {
-		return flink.Sources{}, false
+		return flink.Sources{}, false, false
 	}
-	if c, has := r.jobs.Load(req.String()); has && c.(cachedJob).id == live.JobID {
-		return c.(cachedJob).src, true
+	c, _ := r.jobs.Load(req.String())
+	cached, _ := c.(cachedJob)
+	if cached.id != live.JobID {
+		cached = cachedJob{id: live.JobID}
+	}
+	if len(cached.src.Topics) > 0 || cached.attempts >= sourceAttempts {
+		return cached.src, true, true
 	}
 	src, err := r.Flink.Sources(ctx, req.Namespace, req.Name, live.JobID)
 	if err != nil {
 		ctrl.LoggerFrom(ctx).V(1).Info("job graph unavailable", "err", err)
 		metrics.ProbeErrors.WithLabelValues("flink-rest").Inc()
-		return flink.Sources{}, false
+		return flink.Sources{}, false, false
 	}
-	r.jobs.Store(req.String(), cachedJob{id: live.JobID, src: src})
-	return src, true
+	cached.src, cached.attempts = src, cached.attempts+1
+	r.jobs.Store(req.String(), cached)
+	return src, true, len(src.Topics) > 0 || cached.attempts >= sourceAttempts
+}
+
+// jobGate turns the job's reading into its answer. Pending is exact: the broker's end offset
+// from this tick against the last offset the reader emitted, per declared partition. A reader
+// still at its initial offset is caught up only if it also reports idle, which is a reader
+// that had nothing to read from where it started. Quiet means no record emitted for at
+// least one poll interval, so a job still working through a fetched backlog objects.
+func jobGate(sources []string, snapshot map[string]string, reading flink.Reading, quiet time.Duration) (gate decide.JobGate, note string) {
+	var pending int64
+	for _, topic := range sources {
+		ends := strings.Split(snapshot[topic], ",")
+		cur := reading.Offsets[topic]
+		if snapshot[topic] == "" || cur == nil {
+			return decide.JobUnknown, "job exposes no offsets for " + topic
+		}
+		for p, raw := range ends {
+			end, err := strconv.ParseInt(raw, 10, 64)
+			if err != nil {
+				return decide.JobUnknown, "unreadable end offset for " + topic
+			}
+			emitted, has := cur[p]
+			switch {
+			case !has:
+				return decide.JobUnknown, fmt.Sprintf("job exposes no offset for %s partition %d", topic, p)
+			case emitted == flink.InitialOffset && reading.IdleFor == 0:
+				pending += end // nothing emitted yet and not idle: the reader is about to read
+			case emitted == flink.InitialOffset:
+				// idle without ever emitting: nothing to read from where it started
+			default:
+				pending += max(0, end-(emitted+1))
+			}
+		}
+	}
+	switch {
+	case pending > 0:
+		return decide.JobBusy, fmt.Sprintf("%d records pending in the job", pending)
+	case reading.IdleFor < quiet:
+		return decide.JobBusy, "job emitted a record " + reading.IdleFor.Round(time.Second).String() + " ago"
+	default:
+		return decide.JobIdle, ""
+	}
 }
 
 // verifySources compares the annotation with the job graph and says what it found, once per

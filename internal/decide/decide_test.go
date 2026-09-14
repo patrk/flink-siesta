@@ -36,9 +36,13 @@ func withGroup(p policy.Policy) policy.Policy {
 	return p
 }
 
-func withJobLag(p policy.Policy) policy.Policy {
-	p.LagFromJob = true
+func withJobGate(p policy.Policy) policy.Policy {
+	p.IdleFromJob = true
 	return p
+}
+
+func job(m map[string]string, g JobGate) Observation {
+	return Observation{Snapshot: m, Known: true, Job: g, JobNote: "note"}
 }
 
 func suspendedState() state.State {
@@ -75,10 +79,11 @@ func TestDecide(t *testing.T) {
 		{"with a consumer group, pending records block suspend", withGroup(auto), withSnap(state.Initial(t0), snap("1")), running, lag(snap("1"), 42), t0.Add(15 * 24 * time.Hour), None},
 		{"with a consumer group, unknown lag blocks suspend", withGroup(auto), withSnap(state.Initial(t0), snap("1")), running, seen(snap("1")), t0.Add(15 * 24 * time.Hour), None},
 		{"with a consumer group, caught up suspends", withGroup(auto), withSnap(state.Initial(t0), snap("1")), running, lag(snap("1"), 0), t0.Add(15 * 24 * time.Hour), Suspend},
-		{"lag from the job, unknown blocks suspend", withJobLag(auto), withSnap(state.Initial(t0), snap("1")), running, seen(snap("1")), t0.Add(15 * 24 * time.Hour), None},
-		{"lag from the job, pending records block suspend", withJobLag(auto), withSnap(state.Initial(t0), snap("1")), running, lag(snap("1"), 7), t0.Add(15 * 24 * time.Hour), None},
-		{"lag from the job, caught up suspends", withJobLag(auto), withSnap(state.Initial(t0), snap("1")), running, lag(snap("1"), 0), t0.Add(15 * 24 * time.Hour), Suspend},
-		{"group and job together, caught up suspends", withJobLag(withGroup(auto)), withSnap(state.Initial(t0), snap("1")), running, lag(snap("1"), 0), t0.Add(15 * 24 * time.Hour), Suspend},
+		{"job gate unknown blocks suspend", withJobGate(auto), withSnap(state.Initial(t0), snap("1")), running, job(snap("1"), JobUnknown), t0.Add(15 * 24 * time.Hour), None},
+		{"job gate busy blocks suspend", withJobGate(auto), withSnap(state.Initial(t0), snap("1")), running, job(snap("1"), JobBusy), t0.Add(15 * 24 * time.Hour), None},
+		{"job gate idle suspends", withJobGate(auto), withSnap(state.Initial(t0), snap("1")), running, job(snap("1"), JobIdle), t0.Add(15 * 24 * time.Hour), Suspend},
+		{"job gate is ignored without the annotation", auto, withSnap(state.Initial(t0), snap("1")), running, job(snap("1"), JobBusy), t0.Add(15 * 24 * time.Hour), Suspend},
+		{"job gate never wakes", withJobGate(auto), suspendedState(), suspended, job(snap("100"), JobBusy), t0.Add(24 * time.Hour), None},
 		{"idle boundary: exactly idle-after is not yet idle", auto, withSnap(state.Initial(t0), snap("1")), running, seen(snap("1")), t0.Add(14 * 24 * time.Hour), None},
 		{"idle boundary: one second past is idle", auto, withSnap(state.Initial(t0), snap("1")), running, seen(snap("1")), t0.Add(14*24*time.Hour + time.Second), Suspend},
 		{"one partition of several moving is activity", auto, withSnap(state.Initial(t0), map[string]string{"t-0": "1", "t-1": "1"}), running, seen(map[string]string{"t-0": "1", "t-1": "2"}), t0.Add(30 * 24 * time.Hour), None},
@@ -226,5 +231,11 @@ func TestLagReasonsReachTheObject(t *testing.T) {
 	}
 	if got := d.Decide(withGroup(auto), prev, running, lag(snap("1"), 9), later); got.Next.Reason != "records pending for group g" || got.Next.Pending != 9 {
 		t.Fatalf("Next = %+v", got.Next)
+	}
+	if got := d.Decide(withJobGate(auto), prev, running, job(snap("1"), JobBusy), later); got.Next.Reason != "job busy: note" {
+		t.Fatalf("Next.Reason = %q", got.Next.Reason)
+	}
+	if got := d.Decide(withJobGate(auto), prev, running, job(snap("1"), JobUnknown), later); got.Next.Reason != "job unknown: note" {
+		t.Fatalf("Next.Reason = %q", got.Next.Reason)
 	}
 }

@@ -4,3 +4,4 @@ dist/
 coverage.out
 test/crds/*.yml
 .envtest-path
+e2e/job/target/

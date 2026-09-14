@@ -27,6 +27,7 @@ type State struct {
 	ResumedAt             time.Time // set when we resume; cleared, and the latency reported, once the job is RUNNING
 	Pending               int64     // records the consumer group has not consumed, last time we could tell
 	SourceDown            bool      // the source could not be asked last tick; drives one event per edge
+	SourceDownSince       time.Time // when the current outage was first seen; names it in the events
 	SuspendChecked        bool      // we have seen the operator complete our suspend and checked for a savepoint
 	ResumeStalledReported bool      // ResumeStalled was raised for the current resume
 	SourcesChecked        string    // job id whose graph the sources annotation was last checked against
@@ -78,20 +79,21 @@ func (s State) Data() map[string]string {
 	snap, _ := json.Marshal(s.Snapshot)
 	restarts, _ := json.Marshal(s.Restarts)
 	return map[string]string{
-		"state":            string(s.Phase),
-		"reason":           s.Reason,
-		"offsets":          string(snap),
-		"restarts":         string(restarts),
-		"last-activity-at": formatTime(s.LastActivityAt),
-		"suspended-at":     formatTime(s.SuspendedAt),
-		"awake-since":      formatTime(s.AwakeSince),
-		"resumed-at":       formatTime(s.ResumedAt),
-		"generation":       strconv.FormatInt(s.Generation, 10),
-		"pending":          strconv.FormatInt(s.Pending, 10),
-		"source-down":      strconv.FormatBool(s.SourceDown),
-		"suspend-checked":  strconv.FormatBool(s.SuspendChecked),
-		"resume-stalled":   strconv.FormatBool(s.ResumeStalledReported),
-		"sources-checked":  s.SourcesChecked,
+		"state":             string(s.Phase),
+		"reason":            s.Reason,
+		"offsets":           string(snap),
+		"restarts":          string(restarts),
+		"last-activity-at":  formatTime(s.LastActivityAt),
+		"suspended-at":      formatTime(s.SuspendedAt),
+		"awake-since":       formatTime(s.AwakeSince),
+		"resumed-at":        formatTime(s.ResumedAt),
+		"generation":        strconv.FormatInt(s.Generation, 10),
+		"pending":           strconv.FormatInt(s.Pending, 10),
+		"source-down":       strconv.FormatBool(s.SourceDown),
+		"source-down-since": formatTime(s.SourceDownSince),
+		"suspend-checked":   strconv.FormatBool(s.SuspendChecked),
+		"resume-stalled":    strconv.FormatBool(s.ResumeStalledReported),
+		"sources-checked":   s.SourcesChecked,
 	}
 }
 
@@ -119,6 +121,7 @@ func FromData(d map[string]string) (State, bool) {
 	s.Generation, _ = strconv.ParseInt(d["generation"], 10, 64)
 	s.Pending, _ = strconv.ParseInt(d["pending"], 10, 64)
 	s.SourceDown, _ = strconv.ParseBool(d["source-down"])
+	s.SourceDownSince = parseTime(d["source-down-since"])
 	s.SuspendChecked, _ = strconv.ParseBool(d["suspend-checked"])
 	s.ResumeStalledReported, _ = strconv.ParseBool(d["resume-stalled"])
 	s.SourcesChecked = d["sources-checked"]

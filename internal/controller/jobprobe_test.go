@@ -16,13 +16,13 @@ import (
 	"github.com/patrk/flink-siesta/internal/state"
 )
 
-// fakeJob plays the JobManager REST API: fixed topics and a pendingRecords value, with call counts.
+// fakeJob plays the JobManager REST API: fixed topics and one reading, with call counts.
 type fakeJob struct {
-	topics   []string
-	pending  int64
-	err      error
-	sources  int
-	pendings int
+	topics  []string
+	reading flink.Reading
+	err     error
+	sources int
+	reads   int
 }
 
 func (f *fakeJob) Sources(context.Context, string, string, string) (flink.Sources, error) {
@@ -30,12 +30,12 @@ func (f *fakeJob) Sources(context.Context, string, string, string) (flink.Source
 	if f.err != nil {
 		return flink.Sources{}, f.err
 	}
-	return flink.Sources{Topics: f.topics, Pending: map[string][]string{"v": {"pendingRecords"}}}, nil
+	return flink.Sources{Topics: f.topics, Vertices: []string{"v"}}, nil
 }
 
-func (f *fakeJob) Pending(context.Context, string, string, string, flink.Sources) (int64, error) {
-	f.pendings++
-	return f.pending, f.err
+func (f *fakeJob) Read(context.Context, string, string, string, flink.Sources) (flink.Reading, error) {
+	f.reads++
+	return f.reading, f.err
 }
 
 // fakeRecorder keeps event reasons in order.
@@ -73,21 +73,22 @@ func setJobID(t *testing.T, r *Reconciler, fd *unstructured.Unstructured, id str
 	}
 }
 
-func TestSourcesAreVerifiedOncePerJobInstanceAndLagFromTheJobGatesSuspend(t *testing.T) {
+func TestSourcesAreVerifiedOncePerJobInstanceAndTheJobGateHoldsTheSuspend(t *testing.T) {
 	c := startEnv(t)
 	ctx := context.Background()
 	fd := createDeployment(t, c, "job", "savepoint")
 	ann := fd.GetAnnotations()
-	ann["siesta.flink.io/lag"] = "job"
+	ann["siesta.flink.io/idle"] = "job"
 	fd.SetAnnotations(ann)
 	if err := c.Update(ctx, fd); err != nil {
 		t.Fatal(err)
 	}
 
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
-	offsets := map[string]string{"in-0": "5"}
+	offsets := map[string]string{"in": "5"} // the broker: partition 0 ends at 5
 	r := newReconciler(c, &now, probe.Func(func(context.Context, []string) (map[string]string, bool) { return offsets, true }))
-	job := &fakeJob{topics: []string{"other"}, pending: 3}
+	// The job emitted up to offset 1, so three records are still pending in it.
+	job := &fakeJob{topics: []string{"other"}, reading: flink.Reading{Offsets: map[string]map[int]int64{"in": {0: 1}}, IdleFor: time.Hour}}
 	rec := &fakeRecorder{}
 	r.Flink, r.Recorder = job, rec
 	setJobID(t, r, fd, "j1")
@@ -114,23 +115,33 @@ func TestSourcesAreVerifiedOncePerJobInstanceAndLagFromTheJobGatesSuspend(t *tes
 	if s := specJobState(t, c, key); s != "running" {
 		t.Fatal("pending records in the job must block the suspend")
 	}
-	if st, _, _ = r.Store.Load(ctx, fd); !strings.Contains(st.Reason, "records pending in the job") {
+	if st, _, _ = r.Store.Load(ctx, fd); st.Reason != "job busy: 3 records pending in the job" {
 		t.Fatalf("reason = %q", st.Reason)
 	}
 
 	job.err = errors.New("connection refused")
 	reconcile()
 	if s := specJobState(t, c, key); s != "running" {
-		t.Fatal("an unreachable REST API is unknown lag, which never suspends")
+		t.Fatal("an unreachable REST API is an unknown gate, which never suspends")
 	}
-	if st, _, _ = r.Store.Load(ctx, fd); !strings.Contains(st.Reason, "lag unknown in the job") {
+	if st, _, _ = r.Store.Load(ctx, fd); !strings.HasPrefix(st.Reason, "job unknown: ") {
 		t.Fatalf("reason = %q", st.Reason)
 	}
 
-	job.err, job.pending = nil, 0
+	job.err = nil
+	job.reading = flink.Reading{Offsets: map[string]map[int]int64{"in": {0: 4}}, IdleFor: time.Second}
+	reconcile()
+	if s := specJobState(t, c, key); s != "running" {
+		t.Fatal("a record emitted within the poll interval must hold the suspend")
+	}
+	if st, _, _ = r.Store.Load(ctx, fd); !strings.HasPrefix(st.Reason, "job busy: job emitted a record") {
+		t.Fatalf("reason = %q", st.Reason)
+	}
+
+	job.reading = flink.Reading{Offsets: map[string]map[int]int64{"in": {0: 4}}, IdleFor: time.Hour}
 	reconcile()
 	if s := specJobState(t, c, key); s != "suspended" {
-		t.Fatal("caught up in the job must allow the suspend")
+		t.Fatal("caught up and quiet in the job must allow the suspend")
 	}
 
 	// The job is restarted by someone: a new job id with matching sources is verified afresh.
@@ -142,5 +153,30 @@ func TestSourcesAreVerifiedOncePerJobInstanceAndLagFromTheJobGatesSuspend(t *tes
 	}
 	if st, _, _ = r.Store.Load(ctx, fd); st.Phase != state.Suspended {
 		t.Fatalf("verification must not touch the phase, got %s", st.Phase)
+	}
+}
+
+func TestAJobWithoutKafkaSourceMetricsIsReportedUnverified(t *testing.T) {
+	c := startEnv(t)
+	ctx := context.Background()
+	fd := createDeployment(t, c, "job", "savepoint")
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	r := newReconciler(c, &now, probe.Func(func(context.Context, []string) (map[string]string, bool) { return map[string]string{"in-0": "1"}, true }))
+	job, rec := &fakeJob{}, &fakeRecorder{}
+	r.Flink, r.Recorder = job, rec
+	setJobID(t, r, fd, "j1")
+	key := types.NamespacedName{Name: "job", Namespace: "default"}
+	// The reader registers its topic metrics a few seconds after RUNNING, so a job without
+	// them gets three ticks before the absence is reported, and the graph is not read again after.
+	for i := range 5 {
+		if _, err := r.Reconcile(ctx, reconcileRequest(key)); err != nil {
+			t.Fatal(err)
+		}
+		if i < 2 && len(rec.reasons) != 0 {
+			t.Fatalf("tick %d: too early to conclude, events = %v", i+1, rec.reasons)
+		}
+	}
+	if rec.count("SourcesUnverified") != 1 || rec.count("SourcesDrift") != 0 || job.sources != 3 {
+		t.Fatalf("events = %v, graph reads = %d", rec.reasons, job.sources)
 	}
 }

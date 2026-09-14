@@ -80,7 +80,19 @@ type Observation struct {
 	Known    bool
 	Pending  int64 // records the consumer group has not consumed yet; meaningful only if LagKnown
 	LagKnown bool
+	// Job is the running job's own view, used only with idle: job. It can object, never decide.
+	Job     JobGate
+	JobNote string // why the job gate is busy or unknown, for the reason on the object
 }
+
+// JobGate is the job's answer to "may this job sleep": ADR 13.
+type JobGate int
+
+const (
+	JobUnknown JobGate = iota // not asked, not reachable, or no answer for a declared partition
+	JobBusy                   // records still to emit, or a record emitted within the last poll interval
+	JobIdle                   // every declared partition emitted up to the end, and quiet for a poll interval
+)
 
 type Decider struct{ restart RestartPolicy }
 
@@ -183,20 +195,32 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, obs Obser
 				cur.Reason = "suspend refused: upgradeMode " + live.UpgradeMode + " would lose the job's position"
 				return Decision{Action: Refuse, Next: cur, Reason: cur.Reason}
 			}
-			if p.ConsumerGroup != "" || p.LagFromJob {
-				// Idle also means caught up: nothing pending, as the consumer group or the job reports it.
-				// These two reasons are written to the object, unlike the other waits: an idle job
+			if p.ConsumerGroup != "" {
+				// Idle also means caught up: nothing pending for the job's consumer group.
+				// These reasons are written to the object, unlike the other waits: an idle job
 				// that stays awake is a question someone will ask, and this is the answer.
 				if !obs.LagKnown {
-					cur.Reason = "lag unknown " + lagSource(p)
+					cur.Reason = "lag unknown for group " + p.ConsumerGroup
 					return Decision{Action: None, Next: cur, Reason: cur.Reason}
 				}
 				if obs.Pending > 0 {
 					// Coarse reason on the object; the number goes to the store.
-					cur.Pending, cur.Reason = obs.Pending, "records pending "+lagSource(p)
+					cur.Pending, cur.Reason = obs.Pending, "records pending for group "+p.ConsumerGroup
 					return Decision{Action: None, Next: cur, Reason: cur.Reason}
 				}
 				cur.Pending = 0
+			}
+			if p.IdleFromJob {
+				// The job's own view is the last gate (ADR 13): it may only object.
+				switch obs.Job {
+				case JobIdle:
+				case JobBusy:
+					cur.Reason = "job busy: " + obs.JobNote
+					return Decision{Action: None, Next: cur, Reason: cur.Reason}
+				default:
+					cur.Reason = "job unknown: " + obs.JobNote
+					return Decision{Action: None, Next: cur, Reason: cur.Reason}
+				}
 			}
 			cur.Phase, cur.SuspendedAt = state.Suspended, now
 			cur.Reason = "no input for " + p.IdleAfter.String()
@@ -228,16 +252,4 @@ func (d *Decider) unrecoverable(live Live) string {
 		}
 	}
 	return ""
-}
-
-// lagSource names where "caught up" is measured, for the reason on the object.
-func lagSource(p policy.Policy) string {
-	switch {
-	case p.ConsumerGroup != "" && p.LagFromJob:
-		return "for group " + p.ConsumerGroup + " and in the job"
-	case p.LagFromJob:
-		return "in the job"
-	default:
-		return "for group " + p.ConsumerGroup
-	}
 }

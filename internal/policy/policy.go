@@ -21,9 +21,9 @@ type Policy struct {
 	// ConsumerGroup, when set, makes "idle" also require that the group has consumed everything
 	// (lag zero). Empty means only "no new input" is checked.
 	ConsumerGroup string
-	// LagFromJob, from `lag: job`, makes "idle" also require that the running job reports zero
-	// pendingRecords on its sources. Works without a consumer group; combines with one.
-	LagFromJob bool
+	// IdleFromJob, from `idle: job`, adds the running job's own view as a gate: it may block a
+	// suspend while it still has records to emit or emitted one recently, never cause one.
+	IdleFromJob bool
 	// Problems lists values that were missing or unparsable. A policy with problems is still
 	// "ours" (mode is set) but must not be acted on; the reconciler reports them once.
 	Problems []string
@@ -47,12 +47,12 @@ func Read(prefix string, ann map[string]string) (Policy, bool) {
 	default:
 		p.Problems = append(p.Problems, prefix+"/mode must be auto or off, got "+mode)
 	}
-	switch lag := strings.TrimSpace(ann[prefix+"/lag"]); {
-	case lag == "":
-	case strings.EqualFold(lag, "job"):
-		p.LagFromJob = true
+	switch idle := strings.TrimSpace(ann[prefix+"/idle"]); {
+	case idle == "":
+	case strings.EqualFold(idle, "job"):
+		p.IdleFromJob = true
 	default:
-		p.Problems = append(p.Problems, prefix+"/lag must be job or absent, got "+lag)
+		p.Problems = append(p.Problems, prefix+"/idle must be job or absent, got "+idle)
 	}
 	p.IdleAfter = p.duration(prefix+"/idle-after", ann, 14*24*time.Hour)
 	p.MinAwake = p.duration(prefix+"/min-awake", ann, time.Hour)

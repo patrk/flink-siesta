@@ -20,7 +20,8 @@ metrics are the same from Flink 1.20 through 2.2.
    deliberately does not want to be woken by, and because a job that is suspended has no
    REST API to ask. Deriving would also make the wake signal depend on a value the
    controller could not read while the job sleeps.
-2. **`lag: job` is a second way to say caught up.** With this annotation, idle additionally
+2. **The job's own view of caught up.** (Superseded by ADR 13, which replaces the gauge
+   with an exact offset comparison and names the annotation `idle: job`.) With this annotation, idle additionally
    requires that the source vertices report zero `pendingRecords`. It needs no consumer
    group, no checkpointing and no group ACL. It can be combined with `consumer-group`, and
    then both must be zero. If the REST API cannot be reached, lag is unknown, and unknown
@@ -29,6 +30,13 @@ metrics are the same from Flink 1.20 through 2.2.
 
 Everything the REST API is asked is read-only, and `--flink-rest=false` switches it off
 entirely for clusters that will not open that path.
+
+Two things the first real run taught, both now part of the design. The reader registers its
+topic metrics a few seconds after the job reports RUNNING, so the check gives a job three
+ticks before "no Kafka source" counts as an answer. And the connector registers
+`pendingRecords` only after a partition has delivered its first record, so while the gauge
+is absent the reader's `currentOffset` gauges decide: all at their initial value means nothing
+was fetched and nothing is pending, anything else without the gauge is unknown.
 
 **Consequences.** The controller now dials a third destination, the JobManager Service in
 its own namespace, and the README says which network policy line that is. One extra HTTP
