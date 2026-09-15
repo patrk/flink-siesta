@@ -50,7 +50,7 @@ type Reconciler struct {
 	Recorder recorder.EventRecorder
 	Now      func() time.Time // injectable clock; tests freeze it
 	Store    store.Store
-	// PollInterval is how often each deployment is revisited; ProbeTimeout bounds one source call
+	// PollInterval is how often each deployment is revisited; ProbeTimeout bounds the probes of one tick
 	// so a hung broker degrades to "unknown" for one deployment instead of freezing the worker.
 	PollInterval     time.Duration
 	ProbeTimeout     time.Duration

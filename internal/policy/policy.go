@@ -40,8 +40,15 @@ func Read(prefix string, ann map[string]string) (Policy, bool) {
 	}
 	p := Policy{
 		Mode:          ModeAuto,
-		Restart:       !strings.EqualFold(ann[prefix+"/restart"], "off"),
+		Restart:       true,
 		ConsumerGroup: strings.TrimSpace(ann[prefix+"/consumer-group"]),
+	}
+	switch restart := strings.TrimSpace(ann[prefix+"/restart"]); {
+	case restart == "", strings.EqualFold(restart, "auto"):
+	case strings.EqualFold(restart, "off"):
+		p.Restart = false
+	default:
+		p.Problems = append(p.Problems, prefix+"/restart must be auto or off, got "+restart)
 	}
 	switch {
 	case strings.EqualFold(mode, "off"):
