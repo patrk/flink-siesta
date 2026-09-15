@@ -41,6 +41,9 @@ func FootprintOf(u *unstructured.Unstructured) Footprint {
 	}
 }
 
+// resourceOf reads the operator's own resource block, cpu as a number and memory as a Flink
+// memory string, and otherwise the Kubernetes ResourceRequirements that operator 1.16 added,
+// requests first and limits as the fallback, both as Kubernetes quantities.
 func resourceOf(u *unstructured.Unstructured, component string) (cpu float64, memory int64) {
 	switch v := nestedAny(u, "spec", component, "resource", "cpu").(type) {
 	case float64:
@@ -53,7 +56,34 @@ func resourceOf(u *unstructured.Unstructured, component string) (cpu float64, me
 	if m, _, _ := unstructured.NestedString(u.Object, "spec", component, "resource", "memory"); m != "" {
 		memory = ParseMemory(m)
 	}
+	for _, kind := range []string{"requests", "limits"} {
+		if cpu == 0 {
+			if q, ok := quantity(nestedAny(u, "spec", component, "resources", kind, "cpu")); ok {
+				cpu = q.AsApproximateFloat64()
+			}
+		}
+		if memory == 0 {
+			if q, ok := quantity(nestedAny(u, "spec", component, "resources", kind, "memory")); ok {
+				memory = q.Value()
+			}
+		}
+	}
 	return cpu, memory
+}
+
+// quantity reads a Kubernetes quantity that the CRD allows as a string or a number.
+func quantity(v any) (resource.Quantity, bool) {
+	switch x := v.(type) {
+	case string:
+		q, err := resource.ParseQuantity(x)
+		return q, err == nil
+	case int64:
+		return *resource.NewQuantity(x, resource.DecimalSI), true
+	case float64:
+		q, err := resource.ParseQuantity(strconv.FormatFloat(x, 'f', -1, 64))
+		return q, err == nil
+	}
+	return resource.Quantity{}, false
 }
 
 // ParseMemory reads a Flink memory string, "1024m", "2g", "512 mb", where the units are powers

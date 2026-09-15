@@ -44,6 +44,10 @@ beat a live busy one. An abstaining variant, where unknown does not block, degra
 missing network policy into today's behaviour without anyone noticing, blocking with
 `job unknown` on the object is the visible failure we want.
 
+Operator 1.16 reads the same per-partition metric names for its autoscaler and moved off
+regular expressions after finding that crafted names could stall matching. Ours cannot be
+stalled that way: Go's regexp is RE2, linear in the input.
+
 **Consequences.** `idle: job` is opt-in, so nothing changes for existing deployments. A job
 restarted by the operator waits one poll interval, not a whole idle window, before the gate
 can say idle. The worst remaining case is a non-checkpointing job without `idle: job` and

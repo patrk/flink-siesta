@@ -18,7 +18,7 @@ It is not for latency-sensitive jobs. A resume takes the operator's restore from
 
 ## Requirements
 
-- Flink Kubernetes Operator 1.13 to 1.15, tested nightly on every combination with Flink 1.20, 2.0 and 2.2. Older operators from 1.10 should work, since only `spec.job.state`, `status.jobStatus.upgradeSavepointPath` and `status.lifecycleState` are read, but they are not tested.
+- Flink Kubernetes Operator 1.13 to 1.16, tested nightly on every combination with Flink 1.20, 2.0 and 2.2, and 2.3 on operator 1.16. Older operators from 1.10 should work, since only `spec.job.state`, `status.jobStatus.upgradeSavepointPath` and `status.lifecycleState` are read, but they are not tested.
 - Kubernetes 1.30 or later for the admission policy the chart installs by default. On older clusters set `admissionPolicy.enabled: false`. Nothing else needs a recent version.
 - A savepoint directory configured on the FlinkDeployment, `execution.checkpointing.savepoint-dir` on Flink 2.x or `state.savepoints.dir` on 1.x, and `upgradeMode: savepoint` or `last-state`. The controller never changes the upgrade mode. On `stateless` it refuses to suspend and says so in an Event, because a resume would replay the topic from the start.
 - A Kafka credential with Describe on the topics, and on the consumer group if you use one.

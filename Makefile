@@ -39,7 +39,7 @@ kind-up:
 	$(MAKE) kind-deps
 
 kind-deps:
-	helm repo add flink-operator https://downloads.apache.org/flink/flink-kubernetes-operator-$(FLINK_OPERATOR_VERSION)/ && helm repo update
+	helm repo add --force-update flink-operator https://downloads.apache.org/flink/flink-kubernetes-operator-$(FLINK_OPERATOR_VERSION)/ && helm repo update
 	helm --kube-context $(KUBE_CONTEXT) install flink-kubernetes-operator flink-operator/flink-kubernetes-operator --set webhook.create=false
 	kubectl --context $(KUBE_CONTEXT) wait --for=condition=Available deploy/flink-kubernetes-operator --timeout=180s
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased, 0.3.1
+
+- Operator 1.16 and Flink 2.3 in the nightly grid, and the savings footprint reads the Kubernetes `resources` block that 1.16 allows on the pods, next to the operator's own `resource` fields.
+
 ## 0.3.0, 2026-09-16
 
 - `sources: auto` learns the topics from the running job and remembers them, ADR 14. The written list stays the default.

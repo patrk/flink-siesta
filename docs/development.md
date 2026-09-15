@@ -27,7 +27,7 @@ Go, controller-runtime and franz-go. The image is about 20 MB and starts in unde
     make e2e-soak  45 real minutes on KinD: three jobs, random traffic, the controller killed every
                    10 minutes, one Kafka outage. Asserts consistency and flat RSS.
 
-Every push runs the first four on Flink 2.2 and operator 1.15. A nightly workflow, which also runs on tags, repeats the e2e on the full grid of operator 1.13, 1.14 and 1.15 by Flink 1.20, 2.0 and 2.2, and runs the chaos and soak scenarios.
+Every push runs the first four on Flink 2.2 and operator 1.15. A nightly workflow, which also runs on tags, repeats the e2e on the grid of operator 1.13 to 1.16 by Flink 1.20, 2.0 and 2.2, plus Flink 2.3 on operator 1.16, and runs the chaos and soak scenarios.
 
 To get going:
 

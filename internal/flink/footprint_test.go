@@ -39,3 +39,24 @@ func TestFootprintFollowsTheOperatorsSizing(t *testing.T) {
 		t.Fatalf("an empty spec is zero, not a guess: %+v", got)
 	}
 }
+
+// Operator 1.16 lets pods use Kubernetes ResourceRequirements instead of the custom block.
+func TestFootprintReadsKubernetesResourceRequirements(t *testing.T) {
+	u := New()
+	_ = unstructured.SetNestedMap(u.Object, map[string]any{
+		"job":        map[string]any{"parallelism": int64(2)},
+		"jobManager": map[string]any{"resources": map[string]any{"requests": map[string]any{"cpu": "500m", "memory": "1Gi"}}},
+		"taskManager": map[string]any{"resources": map[string]any{
+			"limits": map[string]any{"cpu": int64(2), "memory": "2Gi"}}},
+	}, "spec")
+	got := FootprintOf(u)
+	// one JobManager at 0.5 and 1 GiB, two TaskManagers at 2 cores and 2 GiB from their limits
+	if got.CPU != 0.5+2*2 || got.Memory != 1<<30+2*(2<<30) {
+		t.Fatalf("footprint = %+v", got)
+	}
+	// The custom block wins when both are set.
+	_ = unstructured.SetNestedMap(u.Object, map[string]any{"cpu": 0.25, "memory": "512m"}, "spec", "jobManager", "resource")
+	if got := FootprintOf(u); got.CPU != 0.25+2*2 || got.Memory != 512<<20+2*(2<<30) {
+		t.Fatalf("custom block must win: %+v", got)
+	}
+}
