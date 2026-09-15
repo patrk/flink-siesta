@@ -28,4 +28,4 @@ EXPECT=2 until_count "a second SourceReachable for the recreated topic" 180 occu
 [ "$(transitions_while_unknown 2)" = 0 ] || { echo "nothing may change while the topic is missing:"; events | grep -E "^(Source|Suspended|Resumed|Restarted)"; exit 1; }
 echo "the recreated topic starts at offset 0, which differs from what was remembered: that counts as input and the suspended job is resumed"
 wait_for '{.spec.job.state}' running 120
-echo "outage OK"
+scenario_end outage

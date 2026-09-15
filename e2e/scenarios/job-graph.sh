@@ -25,4 +25,4 @@ i=0; until reason | grep -q 'job busy'; do
 echo "held by: $(reason)"
 wait_for '{.spec.job.state}' suspended 480
 wait_for '{.status.lifecycleState}' SUSPENDED 180
-echo "job-graph OK"
+scenario_end job-graph

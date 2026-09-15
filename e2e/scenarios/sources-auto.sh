@@ -22,4 +22,4 @@ echo "input on the remembered topic wakes the job, which has no JobManager to as
 produce 'echo hello'
 wait_for '{.spec.job.state}' running 120
 wait_for '{.status.jobStatus.state}' RUNNING 300
-echo "sources-auto OK"
+scenario_end sources-auto

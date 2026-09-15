@@ -107,6 +107,15 @@ scenario_start() {
   done
 }
 
+# scenario_end frees what a finished scenario still runs, so the next pair has the memory.
+# Events and the namespace stay for reading; only the pods go.
+scenario_end() {
+  k -n $ns delete flinkdeployment --all --wait=false >/dev/null 2>&1 || true
+  helm --kube-context "$ctx" uninstall siesta -n $ns >/dev/null 2>&1 || true
+  k -n $ns scale deploy/kafka --replicas=0 >/dev/null 2>&1 || true
+  echo "$1 OK"
+}
+
 deploy_example() {
   k -n $ns apply -f "$(render "$here/flinkdeployment.yaml")"
   wait_for '{.status.jobStatus.state}' RUNNING 300

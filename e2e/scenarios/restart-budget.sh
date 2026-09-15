@@ -13,4 +13,4 @@ k -n $ns get configmap siesta-failing -o jsonpath='{.data.restarts}' | grep -q '
 [ "$(occurrences Unrecoverable)" = 1 ] || { echo "expected an Unrecoverable event:"; events; exit 1; }
 events | grep -E "^(Restarted|Unrecoverable)"
 k -n $ns delete flinkdeployment failing --wait=false
-echo "restart-budget OK"
+scenario_end restart-budget

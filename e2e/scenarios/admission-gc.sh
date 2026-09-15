@@ -16,4 +16,4 @@ k -n $ns patch flinkdeployment example --as="$sa" --type merge -p '{"metadata":{
 echo "delete the deployment: its ConfigMap must be garbage-collected"
 k -n $ns delete flinkdeployment example --wait=true
 i=0; until ! k -n $ns get configmap siesta-example >/dev/null 2>&1; do i=$((i+5)); [ $i -ge 120 ] && { echo "ConfigMap siesta-example was not garbage-collected"; exit 1; }; sleep 5; done
-echo "admission-gc OK"
+scenario_end admission-gc

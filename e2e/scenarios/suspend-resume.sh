@@ -32,4 +32,4 @@ jm=$(k -n $ns get pods -l app=example,component=jobmanager -o jsonpath='{.items[
 k -n $ns logs "$jm" | grep -i -E "restoring job .* from savepoint|restored from savepoint" | head -2 | grep -q . \
   || { echo "JobManager log has no savepoint restore line"; k -n $ns logs "$jm" | grep -i savepoint | head; exit 1; }
 events | grep -E "Suspended|Resumed" | tail -4
-echo "suspend-resume OK"
+scenario_end suspend-resume
