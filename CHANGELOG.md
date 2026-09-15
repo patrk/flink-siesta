@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased, 0.3.0
+## 0.3.0, 2026-09-16
 
 - `sources: auto` learns the topics from the running job and remembers them, ADR 14. The written list stays the default.
 - The job gate now lives in the decider on typed end offsets from the probe, so the reconciler only observes and acts, and the state-space test enumerates real readings.

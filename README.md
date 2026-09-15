@@ -29,7 +29,7 @@ It is not for latency-sensitive jobs. A resume takes the operator's restore from
 
 The image and the chart are published to the GitHub Container Registry on every tag.
 
-    helm install siesta oci://ghcr.io/patrk/charts/flink-siesta --version 0.2.3 \
+    helm install siesta oci://ghcr.io/patrk/charts/flink-siesta --version 0.3.0 \
       --set kafka.bootstrapServers=... --set kafka.securityProtocol=SASL_SSL \
       --set kafka.sasl.existingSecret=kafka-auth
 
