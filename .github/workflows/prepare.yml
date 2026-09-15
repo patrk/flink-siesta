@@ -1,0 +1,49 @@
+# Builds what every e2e job needs, once per run: the controller image, and the job jar for
+# each Flink version. Maven Central is asked once per version, and not at all while the pom
+# is unchanged, instead of once per cluster.
+name: prepare
+on:
+  workflow_call:
+    inputs:
+      flink:
+        description: JSON list of Flink versions to build the job for
+        type: string
+        default: '["2.2"]'
+      ref:
+        description: git ref to build
+        type: string
+        default: ""
+
+# Called workflows inherit the caller's permissions, read-only in every caller here.
+permissions:
+  contents: read
+
+jobs:
+  controller-image:
+    name: controller image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with: { ref: "${{ inputs.ref || github.ref }}" }
+      - run: docker build -t siesta:e2e . && docker save siesta:e2e -o siesta-e2e.tar
+      - uses: actions/upload-artifact@v7
+        with: { name: siesta-image, path: siesta-e2e.tar, retention-days: 1 }
+
+  job-jar:
+    name: job jar flink ${{ matrix.flink }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        flink: ${{ fromJSON(inputs.flink) }}
+    steps:
+      - uses: actions/checkout@v7
+        with: { ref: "${{ inputs.ref || github.ref }}" }
+      - uses: actions/setup-java@v6
+        with: { distribution: temurin, java-version: "17" }
+      - uses: actions/cache@v6
+        with:
+          path: ~/.m2/repository
+          key: m2-${{ matrix.flink }}-${{ hashFiles('e2e/job/pom.xml', 'e2e/job/versions.sh') }}
+      - run: bash e2e/job/jar.sh ${{ matrix.flink }}
+      - uses: actions/upload-artifact@v7
+        with: { name: "e2e-job-jar-${{ matrix.flink }}", path: e2e/job/target/e2e-job.jar, retention-days: 1 }

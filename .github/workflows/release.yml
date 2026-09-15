@@ -1,25 +1,64 @@
+# The compatibility grid, and on a tag the release behind it. Every operator version is one
+# box in the run, with its Flink versions by scenario inside. Publishing needs all of them.
 name: release
 on:
   push:
     tags: ["v*"]
+  schedule:
+    - cron: "17 3 * * 1" # the grid on main, weekly, to catch drift in the operator charts
   workflow_dispatch:
     inputs:
       tag:
-        description: existing tag to publish, e.g. v0.1.0
-        required: true
+        description: existing tag to publish after the grid passes. Empty runs the grid on main only.
+        required: false
+        default: ""
 
 permissions:
-  contents: write
-  packages: write
-  id-token: write # keyless signing with the workflow's OIDC identity
+  contents: read
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}
   CHART_REPO: oci://ghcr.io/${{ github.repository_owner }}/charts
 
 jobs:
+  prepare:
+    uses: ./.github/workflows/prepare.yml
+    with:
+      flink: '["1.20", "2.0", "2.2", "2.3"]'
+      ref: ${{ inputs.tag || github.ref }}
+
+  operator-1-13:
+    name: operator 1.13
+    needs: prepare
+    uses: ./.github/workflows/grid.yml
+    with: { operator: "1.13.0", flink: '["1.20", "2.0", "2.2"]', ref: "${{ inputs.tag || github.ref }}" }
+
+  operator-1-14:
+    name: operator 1.14
+    needs: prepare
+    uses: ./.github/workflows/grid.yml
+    with: { operator: "1.14.0", flink: '["1.20", "2.0", "2.2"]', ref: "${{ inputs.tag || github.ref }}" }
+
+  operator-1-15:
+    name: operator 1.15
+    needs: prepare
+    uses: ./.github/workflows/grid.yml
+    with: { operator: "1.15.0", flink: '["1.20", "2.0", "2.2"]', ref: "${{ inputs.tag || github.ref }}" }
+
+  operator-1-16: # flinkVersion v2_3 exists in the CRD from operator 1.16 on
+    name: operator 1.16
+    needs: prepare
+    uses: ./.github/workflows/grid.yml
+    with: { operator: "1.16.0", flink: '["1.20", "2.0", "2.2", "2.3"]', ref: "${{ inputs.tag || github.ref }}" }
+
   publish:
+    needs: [operator-1-13, operator-1-14, operator-1-15, operator-1-16]
+    if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      id-token: write # keyless signing with the workflow's OIDC identity
     steps:
       - uses: actions/checkout@v7
         with:

@@ -49,6 +49,6 @@ Two hours after the last record on `orders`, `kubectl describe flinkdeployment` 
 
 ## Status
 
-0.3.x is a well-tested beta. The decision model is small and covered by a table test, every transition has been run against the real operator, and the failure modes we could think of have events or tests. What it lacks is time: it has not yet run for weeks on a real cluster with real jobs. Run it in dry-run on a development namespace first, then live on non-critical jobs. 1.0 will mean thirty days on a real cluster with more than twenty jobs and no manual intervention, and the nightly grid, chaos and soak suites green for a month. Until then the annotation contract is stable, and any change to it bumps the major version.
+0.3.x is a well-tested beta. The decision model is small and covered by a table test, every transition has been run against the real operator, and the failure modes we could think of have events or tests. What it lacks is time: it has not yet run for weeks on a real cluster with real jobs. Run it in dry-run on a development namespace first, then live on non-critical jobs. 1.0 will mean thirty days on a real cluster with more than twenty jobs and no manual intervention, and the compatibility grid, chaos and soak suites green for a month. Until then the annotation contract is stable, and any change to it bumps the major version.
 
 The mascot is a Siebenschläfer, a dormouse: Berlin neighbours of Flink's squirrel, asleep seven months a year. The artwork is original and not affiliated with the Apache Flink logo. License: Apache-2.0.

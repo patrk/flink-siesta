@@ -1,34 +1,45 @@
+# What takes hours or answers "is it still fine": chaos, the soaks and the benchmark. Nothing
+# here gates a release. The compatibility grid lives in release.yml.
 name: nightly
 on:
   schedule:
     - cron: "17 3 * * *"
-  push:
-    tags: ["v*"]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  e2e-matrix:
+  prepare:
+    uses: ./.github/workflows/prepare.yml
+
+  chaos:
+    needs: prepare
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        operator: ["1.13.0", "1.14.0", "1.15.0", "1.16.0"]
-        flink: ["1.20", "2.0", "2.2", "2.3"]
-        scenario: [suspend-resume, job-graph, outage, admission-gc, restart-budget, sources-auto]
-        exclude: # flinkVersion v2_3 exists in the CRD from operator 1.16 on
-          - { operator: "1.13.0", flink: "2.3" }
-          - { operator: "1.14.0", flink: "2.3" }
-          - { operator: "1.15.0", flink: "2.3" }
-    name: e2e ${{ matrix.scenario }} operator ${{ matrix.operator }} flink ${{ matrix.flink }}
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
-      - uses: helm/kind-action@v1.15.0
-        with: { cluster_name: siesta, config: e2e/kind.yaml }
-      - run: make kind-deps e2e
-        env:
-          FLINK_OPERATOR_VERSION: ${{ matrix.operator }}
-          FLINK_VERSION: ${{ matrix.flink }}
-          E2E_SCENARIO: ${{ matrix.scenario }}
+      - uses: ./.github/actions/e2e
+        with: { target: e2e-chaos }
+
+  soak-kind:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/e2e
+        with: { target: e2e-soak }
+
+  soak-simulated:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version-file: go.mod }
+      - run: make envtest soak
+        env: { SOAK_DEPLOYMENTS: "100", SOAK_TICKS: "3000", SOAK_TIMEOUT: "120m" }
 
   bench:
     runs-on: ubuntu-latest
@@ -43,30 +54,3 @@ jobs:
           name: bench-${{ github.run_id }}
           path: bench.txt
           retention-days: 90
-
-  chaos:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: helm/kind-action@v1.15.0
-        with: { cluster_name: siesta, config: e2e/kind.yaml }
-      - run: make kind-deps e2e-chaos
-
-  soak-simulated:
-    runs-on: ubuntu-latest
-    timeout-minutes: 150
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with: { go-version-file: go.mod }
-      - run: make envtest soak
-        env: { SOAK_DEPLOYMENTS: "100", SOAK_TICKS: "3000", SOAK_TIMEOUT: "120m" }
-
-  soak-kind:
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v7
-      - uses: helm/kind-action@v1.15.0
-        with: { cluster_name: siesta, config: e2e/kind.yaml }
-      - run: make kind-deps e2e-soak

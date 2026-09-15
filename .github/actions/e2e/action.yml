@@ -1,0 +1,28 @@
+name: e2e on KinD
+description: >
+  A KinD cluster with the Flink operator, the controller image and the job jar built earlier
+  in this run, then one make target. Nothing is compiled here.
+inputs:
+  operator: { description: Flink Kubernetes Operator version, default: "1.15.0" }
+  flink: { description: Flink version, default: "2.2" }
+  scenario: { description: "one e2e scenario, or empty for all", default: "" }
+  target: { description: "e2e, e2e-chaos or e2e-soak", default: e2e }
+runs:
+  using: composite
+  steps:
+    - uses: helm/kind-action@v1.15.0
+      with: { cluster_name: siesta, config: e2e/kind.yaml }
+    - uses: actions/download-artifact@v8
+      with: { name: siesta-image, path: /tmp/prepared }
+    - uses: actions/download-artifact@v8
+      with: { name: "e2e-job-jar-${{ inputs.flink }}", path: /tmp/prepared }
+    - shell: bash
+      run: docker load < /tmp/prepared/siesta-e2e.tar
+    - shell: bash
+      run: make e2e-job kind-deps ${{ inputs.target }}
+      env:
+        FLINK_OPERATOR_VERSION: ${{ inputs.operator }}
+        FLINK_VERSION: ${{ inputs.flink }}
+        E2E_SCENARIO: ${{ inputs.scenario }}
+        E2E_JOB_JAR: /tmp/prepared/e2e-job.jar
+        E2E_BUILD: ""

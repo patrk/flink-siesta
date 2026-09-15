@@ -1,5 +1,12 @@
 name: ci
 on: [push, pull_request]
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -16,6 +23,7 @@ jobs:
           helm template t helm/flink-siesta --set kafka.bootstrapServers=b:9092 --set kafka.securityProtocol=SASL_SSL \
             --set kafka.sasl.existingSecret=s --set kafka.tls.existingSecret=t --set metrics.serviceMonitor.enabled=true \
             | grep -q "kind: ServiceMonitor"
+
   integration:
     runs-on: ubuntu-latest
     steps:
@@ -23,9 +31,14 @@ jobs:
       - uses: actions/setup-go@v7
         with: { go-version-file: go.mod }
       - run: make it
+
+  prepare:
+    uses: ./.github/workflows/prepare.yml
+
   e2e:
+    needs: [test, prepare]
     runs-on: ubuntu-latest
-    needs: [test]
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -33,8 +46,5 @@ jobs:
     name: e2e ${{ matrix.scenario }}
     steps:
       - uses: actions/checkout@v7
-      - uses: helm/kind-action@v1.15.0
-        with: { cluster_name: siesta, config: e2e/kind.yaml }
-      - run: make kind-deps e2e
-        env:
-          E2E_SCENARIO: ${{ matrix.scenario }}
+      - uses: ./.github/actions/e2e
+        with: { scenario: "${{ matrix.scenario }}" }

@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# Builds siesta-e2e-job:<flink version>. One Kafka connector line per supported Flink version.
+# Builds siesta-e2e-job:<flink version>: the job jar on the stock Flink image of that version.
+# With E2E_JOB_JAR pointing at a jar from jar.sh the Maven stage is skipped, which is how CI
+# keeps eighty parallel jobs from downloading the same dependencies from Maven Central.
 set -euo pipefail
 v=${1:-2.2}
-case "$v" in
-  1.20) maven=1.20.4; connector=3.4.0-1.20 ;;
-  2.0)  maven=2.0.2;  connector=4.0.1-2.0 ;;
-  2.1)  maven=2.1.2;  connector=5.0.0-2.1 ;;
-  2.2)  maven=2.2.1;  connector=5.0.0-2.2 ;;
-  2.3)  maven=2.2.1;  connector=5.0.0-2.2 ;;  # no connector built for 2.3 yet; the 2.2 one runs on the 2.3 image
-  *) echo "no connector mapping for Flink $v"; exit 1 ;;
-esac
 here=$(cd "$(dirname "$0")" && pwd)
-DOCKER_BUILDKIT=1 docker build "$here" -t "siesta-e2e-job:$v" \
+. "$here/versions.sh"
+job_versions "$v"
+from=build
+if [ -n "${E2E_JOB_JAR:-}" ]; then
+  cp "$E2E_JOB_JAR" "$here/e2e-job.jar"
+  from=prebuilt
+fi
+DOCKER_BUILDKIT=1 docker build "$here" -t "siesta-e2e-job:$v" --build-arg JAR_FROM="$from" \
   --build-arg FLINK_VERSION="$v" --build-arg FLINK_MAVEN_VERSION="$maven" --build-arg KAFKA_CONNECTOR_VERSION="$connector"

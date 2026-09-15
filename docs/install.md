@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Flink Kubernetes Operator 1.13 to 1.16, tested nightly on every combination with Flink 1.20, 2.0 and 2.2, and 2.3 on operator 1.16. Older operators are not tested.
+- Flink Kubernetes Operator 1.13 to 1.16, tested on every release and weekly on every combination with Flink 1.20, 2.0 and 2.2, and 2.3 on operator 1.16. Older operators are not tested.
 - Kubernetes 1.30 or later for the admission policy the chart installs by default. On an older cluster the chart skips it by itself. Nothing else needs a recent version.
 - A savepoint directory configured on the FlinkDeployment, `execution.checkpointing.savepoint-dir` on Flink 2.x or `state.savepoints.dir` on 1.x, and `upgradeMode: savepoint` or `last-state`. The controller never changes the upgrade mode. On `stateless` it refuses to suspend and says so in an Event, because a resume would replay the topic from the start.
 - A Kafka credential, see Connecting to Kafka below.

@@ -5,3 +5,4 @@ coverage.out
 test/crds/*.yml
 .envtest-path
 e2e/job/target/
+e2e/job/e2e-job.jar
