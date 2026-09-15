@@ -4,23 +4,12 @@
 
 A Kubernetes controller that suspends idle Flink jobs and resumes them when data arrives.
 
-```mermaid
-sequenceDiagram
-    participant K as Kafka
-    participant S as Siesta
-    participant F as FlinkDeployment
-    participant O as Flink Operator
-    loop every minute
-        S->>K: end offsets of the job's topics
-    end
-    Note over S: nothing new for idle-after, every gate open
-    S->>F: spec.job.state: suspended
-    O->>O: savepoint, tear down JobManager and TaskManagers
-    S->>K: end offsets, still every minute
-    K-->>S: moved
-    S->>F: spec.job.state: running
-    O->>O: restore from the savepoint, continue where it stopped
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/siesta-dark.svg">
+    <img src="docs/siesta-light.svg" alt="A job runs while records arrive. After idle-after Siesta suspends it with a savepoint. A record arrives, Siesta resumes it and the job continues where it stopped" width="900">
+  </picture>
+</p>
 
 The Flink Kubernetes Operator can suspend a running job and later restore it from its savepoint: set `spec.job.state` to `suspended` and back to `running` on the FlinkDeployment. It is a manual step, and the operator has no notion of "this job has had no input for two weeks". Siesta watches the Kafka topics a job consumes and flips that switch on evidence. The operator does the savepoint, the teardown and the restore. Siesta only decides when.
 

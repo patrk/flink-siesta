@@ -42,3 +42,10 @@ One reconcile is one cached read of the deployment, one read of its ConfigMap, o
 `make bench` measures the controller's own overhead, not capacity. It comes to about 2 ms per reconcile on an Apple M4 Pro, against a local envtest API server with a fake probe on the quiet path. Add your Kafka and API server round trips to that. With 10 ms to Kafka and 5 ms to the API server, one worker handles a few thousand deployments per minute, which is far beyond the population this is built for.
 
 Horizontal scale is per namespace: one instance, one Kafka cluster, one credential. Replicas exist for failover, not throughput. Leader election keeps one active.
+
+## The README illustration
+
+`docs/siesta-light.svg` and `docs/siesta-dark.svg` are drawn by `docs/illustration/draw.js`, so the sketch can be changed in code rather than in a drawing tool. rough.js draws the shapes and opentype.js turns the labels into outlines of Patrick Hand, a handwriting face under the SIL Open Font License, because GitHub shows the image through an `<img>` tag that cannot load fonts. GitHub picks the variant that matches the reader's colour scheme.
+
+    npm install --no-save roughjs opentype.js
+    node docs/illustration/draw.js

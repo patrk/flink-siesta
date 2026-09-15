@@ -7,31 +7,54 @@ The Flink Kubernetes Operator can suspend a running job and later restore it fro
 Siesta automates that step. Once a minute it reads the end offsets of the topics a job consumes with a single admin call. When nothing has moved for `idle-after`, and the job has consumed everything if you gave it the consumer group, it sets `spec.job.state: suspended`. The operator takes a savepoint and tears the job down. Your `upgradeMode` decides how, and the controller never changes it. When the offsets move, the controller sets `spec.job.state: running`, the operator restores from the savepoint, and the Kafka source continues exactly where it stopped. It also restarts failing jobs within a persisted budget.
 
 ```mermaid
+%%{init: {"look": "handDrawn", "theme": "base", "themeVariables": {"primaryColor": "#cbe7fb", "primaryTextColor": "#0b2951", "primaryBorderColor": "#0b2951", "lineColor": "#0b2951", "secondaryColor": "#e6f2fc", "tertiaryColor": "#ffffff", "edgeLabelBackground": "#ffffff"}}}%%
 stateDiagram-v2
+    direction LR
     [*] --> active
-    active --> suspended: no input for idle-after and every gate open
-    suspended --> active: new input on the sources
-    suspended --> active: mode set to off, or resumed by someone else
-    active --> unrecoverable: restart budget exhausted, or an unrecoverable error
-    unrecoverable --> active: the spec is edited
+    active --> suspended: idle, gates open
+    suspended --> active: input or mode off
+    active --> unrecoverable: budget exhausted
+    unrecoverable --> active: spec edited
 ```
 
-The deployment itself carries only two annotations, its state and the reason. Everything else the controller needs to remember lives in a small ConfigMap next to the deployment.
+The deployment itself carries only two annotations, its state and the reason. Everything else the controller needs to remember lives in a small ConfigMap next to the deployment. Tick by tick, the loop looks like this:
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#cbe7fb", "primaryTextColor": "#0b2951", "primaryBorderColor": "#0b2951", "lineColor": "#0b2951", "actorBkg": "#cbe7fb", "actorBorder": "#0b2951", "actorTextColor": "#0b2951", "actorLineColor": "#6e8ca9", "signalColor": "#0b2951", "signalTextColor": "#0b2951", "noteBkgColor": "#e6f2fc", "noteBorderColor": "#0b2951", "noteTextColor": "#0b2951", "labelBoxBkgColor": "#e6f2fc", "labelBoxBorderColor": "#0b2951", "labelTextColor": "#0b2951", "loopTextColor": "#0b2951"}}}%%
+sequenceDiagram
+    participant K as Kafka
+    participant S as Siesta
+    participant F as FlinkDeployment
+    participant O as Flink Operator
+    loop awake, every minute
+        S->>K: end offsets of the job's topics
+    end
+    Note over S: idle-after elapsed, gates open
+    S->>F: spec.job.state: suspended
+    O->>O: savepoint, tear down JobManager and TaskManagers
+    loop asleep, every minute
+        S->>K: end offsets of the job's topics
+    end
+    Note over S: an offset moved
+    S->>F: spec.job.state: running
+    O->>O: restore from the savepoint, continue where it stopped
+```
 
 ## How a suspend is decided
 
 A suspend has to pass a chain of gates, in a fixed order. Each gate can only say "not yet". The first one that does is named in the controller's log line and in the `siesta_held_awake` metric, and the gates after the broker's, a refusal, the consumer group and the job, write their answer as the reason on the object. Nothing on the wake side has gates: the broker's end offsets moving is the only wake signal, because a suspended job has no JobManager to ask.
 
 ```mermaid
+%%{init: {"look": "handDrawn", "theme": "base", "themeVariables": {"primaryColor": "#cbe7fb", "primaryTextColor": "#0b2951", "primaryBorderColor": "#0b2951", "lineColor": "#0b2951", "secondaryColor": "#e6f2fc", "tertiaryColor": "#ffffff", "edgeLabelBackground": "#ffffff"}}}%%
 flowchart TD
-    A[job STABLE and RUNNING, not failing, operator not mid-change] --> B[no new offsets for idle-after, awake for min-awake]
-    B --> C{upgradeMode keeps the job's position?}
-    C -- no --> R[Refused, once]
-    C -- yes --> D{consumer-group set?}
-    D -- yes, lag unknown or above zero --> H1[held awake]
-    D -- no, or lag zero --> E{idle: job set?}
-    E -- yes, job busy or unknown --> H2[held awake]
-    E -- no, or job idle --> S[spec.job.state: suspended]
+    A["job STABLE and RUNNING,<br>operator not mid-change"] --> B["idle-after elapsed<br>min-awake elapsed"]
+    B --> C["keeps position on suspend<br>savepoint or last-state"]
+    C --> D["consumer group caught up<br>only with consumer-group"]
+    D --> E["job has nothing left to do<br>only with idle: job"]
+    E --> S["spec.job.state: suspended"]
+    C -. stateless .-> R["Refused, once"]
+    D -. lag unknown or above zero .-> H["held awake<br>reason on the object"]
+    E -. busy or unknown .-> H
 ```
 
 Unknown never acts. A probe that could not be asked, a lag that could not be measured, a job that could not be reached: each blocks a suspend and never causes one, and none of them wakes a job.
