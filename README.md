@@ -21,7 +21,7 @@ It is for streaming jobs whose input is bursty or dormant for days: development 
 
 ## Quick start
 
-    helm install siesta oci://ghcr.io/patrk/charts/flink-siesta --version 0.3.0 \
+    helm install siesta oci://ghcr.io/patrk/charts/flink-siesta --version 0.3.1 \
       --set kafka.bootstrapServers=... --set kafka.securityProtocol=SASL_SSL \
       --set kafka.sasl.existingSecret=kafka-auth
 
