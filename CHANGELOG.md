@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased, 0.3.1
+## 0.3.1, 2026-09-16
 
 - The README is a two-minute read with a sketched timeline, drawn in code under `docs/illustration`. Concepts, install and operations moved to `docs/`, rewritten rather than moved, with the state and gate diagrams.
 - Operator 1.16 and Flink 2.3 in the compatibility grid, and the savings footprint reads the Kubernetes `resources` block that 1.16 allows on the pods, next to the operator's own `resource` fields.
