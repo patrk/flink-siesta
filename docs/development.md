@@ -31,6 +31,8 @@ Every push runs the first four on Flink 2.2 and operator 1.15. A tag runs the co
 
 CI compiles once per run: the controller image and the job jar per Flink version are built by `prepare.yml` and handed to every e2e job as artifacts, so eighty clusters do not each ask Maven Central for the same dependencies. Locally `make e2e` still builds both itself.
 
+Changes go to main through a pull request, squash merged once ci is green. A branch ruleset enforces it and names the checks. Tags are pushed from main after the grid.
+
 To get going:
 
     make deps         # once, pins the dependencies

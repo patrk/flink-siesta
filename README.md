@@ -1,4 +1,8 @@
 <p align="center"><img src="docs/logo.png" alt="Flink Siesta: two dormice asleep around a pause button" width="180"></p>
+<p align="center">
+  <a href="https://github.com/patrk/flink-siesta/actions/workflows/ci.yml"><img src="https://github.com/patrk/flink-siesta/actions/workflows/ci.yml/badge.svg?branch=main" alt="ci on main"></a>
+  <a href="https://github.com/patrk/flink-siesta/actions/workflows/release.yml"><img src="https://github.com/patrk/flink-siesta/actions/workflows/release.yml/badge.svg" alt="compatibility grid on main"></a>
+</p>
 
 # Flink Siesta
 
