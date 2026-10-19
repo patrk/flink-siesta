@@ -49,7 +49,7 @@ jobs:
     name: operator 1.16
     needs: prepare
     uses: ./.github/workflows/grid.yml
-    with: { operator: "1.16.0", flink: '["1.20", "2.0", "2.2", "2.3"]', ref: "${{ inputs.tag || github.ref }}" }
+    with: { operator: "1.16.1", flink: '["1.20", "2.0", "2.2", "2.3"]', ref: "${{ inputs.tag || github.ref }}" }
 
   publish:
     needs: [operator-1-13, operator-1-14, operator-1-15, operator-1-16]

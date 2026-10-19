@@ -8,6 +8,7 @@
 - Fix: input that arrived while the operator was still suspending was absorbed into memory, so the job slept on until the next record. It now resumes the job once the suspend completes.
 - `SiestaResumeHeld` in `docs/alerts.yaml`, and `offsets-missing` in `siesta_held_awake`.
 - Not yet run against the real operator: the e2e suite has no stateless job built with `committedOffsets`. The assumption that needs it is that a woken job commits again with no new records, so that `max-sleep` resets the broker's expiry clock. Covered so far by the decider, envtest and a real broker, not by an e2e scenario.
+- The compatibility grid runs operator 1.16.1, and the e2e setup installs the operator chart from `archive.apache.org`, which keeps every release. `downloads.apache.org` drops a patch release when the next one ships, which had the grid failing since 1.16.1.
 - The Kafka integration test waits for the group coordinator instead of passing on its first transient error.
 
 ## 0.3.1, 2026-09-16
