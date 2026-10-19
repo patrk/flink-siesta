@@ -191,10 +191,14 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, obs Obser
 			// Someone else set it running. Respect that: it is awake, with a full idle window.
 			return Decision{Action: None, Next: wake(cur, now, ReasonResumedOutside), Reason: ReasonResumedOutside}
 		}
+		// A resume that has to wait keeps the old snapshot, so that the input which asked for it
+		// still reads as movement next tick instead of being absorbed into memory.
+		pending := cur
+		pending.Snapshot = prev.Snapshot
 		if !live.suspended() {
 			// We patched suspended, the operator has not reported SUSPENDED yet: a savepoint may be
 			// in flight. Writing "running" now would race it. Record activity, act next time.
-			return Decision{Action: None, Next: cur, Reason: ReasonOperatorSuspends}
+			return Decision{Action: None, Next: pending, Reason: ReasonOperatorSuspends}
 		}
 		if moved {
 			next := wake(cur, now, "input observed")

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fix: input that arrived while the operator was still suspending was absorbed into memory, so the job slept on until the next record. It now resumes the job once the suspend completes.
+
 ## 0.3.1, 2026-09-16
 
 - The README is a two-minute read with a sketched timeline, drawn in code under `docs/illustration`. Concepts, install and operations moved to `docs/`, rewritten rather than moved, with the state and gate diagrams.
