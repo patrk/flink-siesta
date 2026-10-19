@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Fix: input that arrived while the operator was still suspending was absorbed into memory, so the job slept on until the next record. It now resumes the job once the suspend completes.
+- The Kafka integration test waits for the group coordinator instead of passing on its first transient error.
 
 ## 0.3.1, 2026-09-16
 

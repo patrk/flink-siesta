@@ -64,8 +64,9 @@ func (k *Kafka) Observe(ctx context.Context, topics []string) (Offsets, error) {
 }
 
 // Lag sums end offset minus the group's committed offset over every partition of the topics.
-// Flink commits the next offset to read on each checkpoint, and the end offset is the next
-// offset to write, so the difference is exactly the records not yet checkpointed as consumed.
+// Flink commits the next offset to read on each checkpoint, or on the client's auto-commit
+// interval with checkpointing off, and the end offset is the next offset to write, so the
+// difference is exactly the records not yet committed as consumed.
 func (k *Kafka) Lag(ctx context.Context, group string, topics []string) (int64, error) {
 	committed, err := k.adm.FetchOffsets(ctx, group)
 	if err == nil {
@@ -85,9 +86,13 @@ func (k *Kafka) Lag(ctx context.Context, group string, topics []string) (int64, 
 	var uncommitted error
 	ends.Each(func(o kadm.ListedOffset) {
 		c, ok := committed.Lookup(o.Topic, o.Partition)
-		if !ok || c.Err != nil {
-			// A partition this group never committed: we cannot say it is caught up.
-			uncommitted = fmt.Errorf("group %s has no committed offset for %s partition %d", group, o.Topic, o.Partition)
+		switch {
+		case ok && c.Err != nil:
+			uncommitted = fmt.Errorf("committed offset for group %s, %s partition %d: %w", group, o.Topic, o.Partition, c.Err)
+			return
+		case !ok || c.At < 0:
+			// A partition this group never committed, or whose commit expired: we cannot say it is caught up.
+			uncommitted = fmt.Errorf("group %s has %w for %s partition %d", group, ErrNoCommit, o.Topic, o.Partition)
 			return
 		}
 		if d := o.Offset - c.At; d > 0 {

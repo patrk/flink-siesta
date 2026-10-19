@@ -3,6 +3,7 @@ package probe
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 )
@@ -48,6 +49,11 @@ func Ends(snapshot map[string]string) map[string][]int64 {
 	}
 	return out
 }
+
+// ErrNoCommit wraps a lag error whose cause is a partition the group has no committed offset
+// for: never committed, or committed and since expired by the broker. It is still an unknown
+// lag; the wrapper only lets the caller tell it apart from a broker that could not be asked.
+var ErrNoCommit = errors.New("no committed offset")
 
 // LagProbe is optional: a source that has a notion of "consumed up to" can report how much
 // is still pending for a consumer. An error means it could not be measured, which, like an

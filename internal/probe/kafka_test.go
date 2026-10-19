@@ -4,6 +4,7 @@ package probe
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -66,9 +67,15 @@ func TestKafkaEndOffsets(t *testing.T) {
 		t.Fatal("missing topic must be unknown, not zero")
 	}
 
-	// Lag: a group that never committed is unknown, not "caught up".
-	if _, err := p.Lag(ctx, "g", []string{"in"}); err == nil {
-		t.Fatal("group without commits must be unknown")
+	// Lag: a group that never committed is unknown, not "caught up". A fresh broker answers
+	// COORDINATOR_NOT_AVAILABLE for a few seconds first, which is unknown for another reason.
+	_, err = p.Lag(ctx, "g", []string{"in"})
+	for deadline := time.Now().Add(time.Minute); err != nil && !errors.Is(err, ErrNoCommit) && time.Now().Before(deadline); {
+		time.Sleep(time.Second)
+		_, err = p.Lag(ctx, "g", []string{"in"})
+	}
+	if !errors.Is(err, ErrNoCommit) {
+		t.Fatalf("group without commits must be unknown, and say it has no commit: %v", err)
 	}
 	adm := kadm.NewClient(cl)
 	var partial kadm.Offsets
@@ -76,8 +83,8 @@ func TestKafkaEndOffsets(t *testing.T) {
 	if _, err := adm.CommitOffsets(ctx, "g", partial); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.Lag(ctx, "g", []string{"in"}); err == nil {
-		t.Fatal("a partition the group never committed must make lag unknown")
+	if _, err := p.Lag(ctx, "g", []string{"in"}); !errors.Is(err, ErrNoCommit) {
+		t.Fatalf("a partition the group never committed must make lag unknown, and say so: %v", err)
 	}
 	var committed kadm.Offsets
 	committed.Add(kadm.Offset{Topic: "in", Partition: 0, At: 1})
@@ -93,5 +100,13 @@ func TestKafkaEndOffsets(t *testing.T) {
 	}
 	if pending, err := p.Lag(ctx, "g", []string{"in"}); err != nil || pending != 1 {
 		t.Fatalf("want one pending record, got (%d, %v)", pending, err)
+	}
+
+	// Offsets the broker no longer holds, as after offsets.retention.minutes: no commit again.
+	if _, err := adm.DeleteOffsets(ctx, "g", kadm.TopicsSet{"in": {0: {}, 1: {}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Lag(ctx, "g", []string{"in"}); !errors.Is(err, ErrNoCommit) {
+		t.Fatalf("deleted offsets must read as no commit, got %v", err)
 	}
 }
