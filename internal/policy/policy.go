@@ -27,6 +27,13 @@ type Policy struct {
 	// IdleFromJob, from `idle: job`, adds the running job's own view as a gate: it may block a
 	// suspend while it still has records to emit or emitted one recently, never cause one.
 	IdleFromJob bool
+	// ResumeFromGroup, from `resume-from: group-offsets`, says the job's Kafka source starts
+	// from the consumer group's committed offsets when it has no state to restore (ADR 15). It
+	// lets a stateless deployment sleep, and is ignored under any other upgrade mode.
+	ResumeFromGroup bool
+	// MaxSleep bounds how long a job resuming from group offsets sleeps, so that the broker
+	// does not expire the group's offsets while nothing commits. Zero means unbounded.
+	MaxSleep time.Duration
 	// Problems lists values that were missing or unparsable. A policy with problems is still
 	// "ours" (mode is set) but must not be acted on; the reconciler reports them once.
 	Problems []string
@@ -66,6 +73,18 @@ func Read(prefix string, ann map[string]string) (Policy, bool) {
 	}
 	p.IdleAfter = p.duration(prefix+"/idle-after", ann, 14*24*time.Hour)
 	p.MinAwake = p.duration(prefix+"/min-awake", ann, time.Hour)
+	switch from := strings.TrimSpace(ann[prefix+"/resume-from"]); {
+	case from == "":
+	case strings.EqualFold(from, "group-offsets"):
+		p.ResumeFromGroup = true
+		if p.ConsumerGroup == "" {
+			p.Problems = append(p.Problems, prefix+"/resume-from: group-offsets needs "+prefix+"/consumer-group, the group whose offsets the job resumes from")
+		}
+	default:
+		p.Problems = append(p.Problems, prefix+"/resume-from must be group-offsets or absent, got "+from)
+	}
+	// Six days stays inside Kafka's default offsets.retention.minutes of seven.
+	p.MaxSleep = p.duration(prefix+"/max-sleep", ann, 6*24*time.Hour)
 	if strings.EqualFold(strings.TrimSpace(ann[prefix+"/sources"]), "auto") {
 		p.SourcesAuto = true
 	} else {

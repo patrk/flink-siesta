@@ -2,7 +2,12 @@
 
 ## Unreleased
 
+- `resume-from: group-offsets` lets a `stateless` job sleep when its Kafka source resumes from the consumer group's committed offsets, ADR 15. It needs `consumer-group`, and the job sleeps only at lag zero.
+- `max-sleep`, six days by default, wakes such a job before the broker expires its group's offsets. It commits, and sleeps again after `min-awake` without a new idle window.
+- A resume whose group has no committed offsets is held with a `ResumeHeld` Warning instead of starting the source from its reset strategy. The held input still wakes the job once the offsets are back.
 - Fix: input that arrived while the operator was still suspending was absorbed into memory, so the job slept on until the next record. It now resumes the job once the suspend completes.
+- `SiestaResumeHeld` in `docs/alerts.yaml`, and `offsets-missing` in `siesta_held_awake`.
+- Not yet run against the real operator: the e2e suite has no stateless job built with `committedOffsets`. The assumption that needs it is that a woken job commits again with no new records, so that `max-sleep` resets the broker's expiry clock. Covered so far by the decider, envtest and a real broker, not by an e2e scenario.
 - The Kafka integration test waits for the group coordinator instead of passing on its first transient error.
 
 ## 0.3.1, 2026-09-16

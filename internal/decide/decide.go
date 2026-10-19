@@ -40,6 +40,12 @@ func (l Live) keepsPosition() bool {
 	return l.UpgradeMode == "savepoint" || l.UpgradeMode == "last-state"
 }
 
+// resumesFromGroup: the job restarts without state and its Kafka source starts from the
+// consumer group's committed offsets (ADR 15). Then the group's offsets are its position.
+func (l Live) resumesFromGroup(p policy.Policy) bool {
+	return p.ResumeFromGroup && l.UpgradeMode == "stateless"
+}
+
 type Action int
 
 const (
@@ -86,6 +92,10 @@ type Observation struct {
 	Known    bool
 	Pending  int64 // records the consumer group has not consumed yet; meaningful only if LagKnown
 	LagKnown bool
+	// Uncommitted, when not empty, says why LagKnown is false: the group has no committed offset
+	// for a partition, never committed or expired. For a job resuming from group offsets that
+	// is the one thing that must stop a resume (ADR 15).
+	Uncommitted string
 	// Ends holds the broker's end offset per partition for each source, the typed side of the
 	// snapshot, for the job gate. A missing partition is -1.
 	Ends map[string][]int64
@@ -182,7 +192,7 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, obs Obser
 	cur := prev
 	cur.Snapshot = obs.Snapshot
 	if moved {
-		cur.LastActivityAt = now
+		cur.LastActivityAt, cur.RefreshWake = now, false
 	}
 
 	switch prev.Phase {
@@ -200,12 +210,37 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, obs Obser
 			// in flight. Writing "running" now would race it. Record activity, act next time.
 			return Decision{Action: None, Next: pending, Reason: ReasonOperatorSuspends}
 		}
-		if moved {
-			next := wake(cur, now, "input observed")
-			next.ResumedAt = now
-			return Decision{Action: Resume, Next: next, Reason: ReasonInputObserved}
+		fromGroup := live.resumesFromGroup(p)
+		// A job resuming from group offsets is woken before the broker expires them, and put
+		// back to sleep by the usual gates once it has committed again (ADR 15).
+		refresh := !moved && fromGroup && p.MaxSleep > 0 && now.After(prev.SuspendedAt.Add(p.MaxSleep))
+		if !moved && !refresh {
+			return Decision{Action: None, Next: cur, Reason: ReasonIdle}
 		}
-		return Decision{Action: None, Next: cur, Reason: ReasonIdle}
+		if fromGroup {
+			// Without committed offsets the source would start from its reset strategy, which
+			// replays or skips the topic. A job left asleep can be resumed later; a replay into
+			// its sinks cannot be undone. So the resume waits for a human, and says why.
+			switch {
+			case obs.Uncommitted != "":
+				pending.Reason = reasonOffsetsMissing(p.ConsumerGroup)
+				return Decision{Action: None, Next: pending, Reason: pending.Reason, Held: "offsets-missing"}
+			case !obs.LagKnown:
+				pending.Reason = reasonLagUnknown(p.ConsumerGroup)
+				return Decision{Action: None, Next: pending, Reason: pending.Reason, Held: "lag-unknown"}
+			}
+		}
+		if refresh {
+			// The last input is still the last input: once min-awake has passed and the group
+			// has caught up, the job may sleep again without a fresh idle window.
+			next := cur
+			next.Phase, next.SuspendedAt, next.AwakeSince, next.ResumedAt, next.RefreshWake = state.Active, time.Time{}, now, now, true
+			next.Reason = reasonRefresh(p.MaxSleep)
+			return Decision{Action: Resume, Next: next, Reason: next.Reason}
+		}
+		next := wake(cur, now, "input observed")
+		next.ResumedAt = now
+		return Decision{Action: Resume, Next: next, Reason: ReasonInputObserved}
 
 	case state.Unrecoverable:
 		reason := prev.Reason
@@ -257,13 +292,14 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, obs Obser
 				return Decision{Action: Restart, Next: cur, Reason: reasonRestarting(live.JobState, cur.Restarts.Count)}
 			}
 		}
+		// A refresh wake still counts as idle: no input has arrived since the job went to sleep.
+		idle := now.After(cur.LastActivityAt.Add(p.IdleAfter)) || (cur.RefreshWake && live.resumesFromGroup(p))
 		if p.Mode == policy.ModeAuto &&
-			live.stable() && live.SpecJobState == "running" &&
-			now.After(cur.LastActivityAt.Add(p.IdleAfter)) {
+			live.stable() && live.SpecJobState == "running" && idle {
 			if !now.After(cur.AwakeSince.Add(p.MinAwake)) {
 				return Decision{Action: None, Next: cur, Reason: ReasonActive, Held: "min-awake", ResumedAfter: resumedAfter}
 			}
-			if !live.keepsPosition() {
+			if !live.keepsPosition() && !live.resumesFromGroup(p) {
 				cur.Reason = reasonRefused(live.UpgradeMode)
 				return Decision{Action: Refuse, Next: cur, Reason: cur.Reason}
 			}
@@ -298,8 +334,11 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, obs Obser
 					return Decision{Action: None, Next: cur, Reason: cur.Reason, Held: "job-unknown", Gate: gate, GateNote: note}
 				}
 			}
-			cur.Phase, cur.SuspendedAt = state.Suspended, now
 			cur.Reason = reasonNoInput(p.IdleAfter)
+			if cur.RefreshWake {
+				cur.Reason = ReasonRefreshed
+			}
+			cur.Phase, cur.SuspendedAt, cur.RefreshWake = state.Suspended, now, false
 			return Decision{Action: Suspend, Next: cur, Reason: cur.Reason}
 		}
 		return Decision{Action: None, Next: cur, Reason: ReasonActive, ResumedAfter: resumedAfter}
@@ -307,7 +346,7 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, obs Obser
 }
 
 func wake(s state.State, now time.Time, reason string) state.State {
-	s.Phase, s.SuspendedAt, s.AwakeSince, s.LastActivityAt, s.Reason = state.Active, time.Time{}, now, now, reason
+	s.Phase, s.SuspendedAt, s.AwakeSince, s.LastActivityAt, s.Reason, s.RefreshWake = state.Active, time.Time{}, now, now, reason, false
 	return s
 }
 

@@ -18,6 +18,7 @@ const (
 	ReasonOperatorSuspends = "waiting for operator to finish suspending"
 	ReasonOperatorRestarts = "restart left to the operator's health check"
 	ReasonBudgetExhausted  = "restart budget exhausted"
+	ReasonRefreshed        = "group offsets committed again, no input since"
 )
 
 func reasonOperatorBusy(lifecycle string) string   { return "operator busy: " + lifecycle }
@@ -27,8 +28,14 @@ func reasonRefused(upgradeMode string) string {
 }
 func reasonLagUnknown(group string) string     { return "lag unknown for group " + group }
 func reasonRecordsPending(group string) string { return "records pending for group " + group }
-func reasonJobBusy(note string) string         { return "job busy: " + note }
-func reasonJobUnknown(note string) string      { return "job unknown: " + note }
+func reasonOffsetsMissing(group string) string {
+	return "resume held: group " + group + " has no committed offsets, the job would start from its reset strategy"
+}
+func reasonRefresh(maxSleep time.Duration) string {
+	return "asleep for " + maxSleep.String() + ", woken so the group's offsets do not expire"
+}
+func reasonJobBusy(note string) string    { return "job busy: " + note }
+func reasonJobUnknown(note string) string { return "job unknown: " + note }
 func reasonBackoffUntil(t time.Time) string {
 	return "restart backoff until " + t.UTC().Format(time.RFC3339)
 }

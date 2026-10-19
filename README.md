@@ -37,7 +37,7 @@ Two hours after the last record on `orders`, `kubectl describe flinkdeployment` 
 
 ## What it does, and does not
 
-- Suspends through the operator, with a savepoint, so the Kafka source continues exactly where it stopped. It never changes a job's `upgradeMode`, and it refuses to suspend a `stateless` job.
+- Suspends through the operator, with a savepoint or from the last checkpoint, so the Kafka source continues exactly where it stopped. It never changes a job's `upgradeMode`. A `stateless` job sleeps only with `resume-from: group-offsets`, when its source resumes from the consumer group's committed offsets: then the controller wakes it before the broker expires them, and holds a resume if they are gone.
 - Acts only on deployments you annotate, and only from evidence: no new offsets for the idle window, and, if you ask for it, the consumer group caught up or the job itself reporting nothing left to do.
 - Keeps two annotations on the deployment and one small ConfigMap next to it. No CRD, no database, no metrics pipeline in the control path.
 - Restarts failing jobs within a budget, and stops with an event when the budget is gone.

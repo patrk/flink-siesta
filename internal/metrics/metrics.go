@@ -83,7 +83,7 @@ var (
 
 var (
 	dryRunActions = []string{"suspend", "resume", "restart", "refuse", "mark-unrecoverable"}
-	gates         = []string{"min-awake", "lag-unknown", "lag-pending", "job-unknown", "job-busy"}
+	gates         = []string{"min-awake", "lag-unknown", "lag-pending", "job-unknown", "job-busy", "offsets-missing"}
 )
 
 var states = []string{"active", "suspended", "unrecoverable"}

@@ -28,8 +28,11 @@ type State struct {
 	ResumedAt      time.Time // set when we resume; cleared, and the latency reported, once the job is RUNNING
 	Pending        int64     // records the consumer group has not consumed, last time we could tell
 	Sources        []string  // with sources: auto, the topics learned from the job, the wake signal while it sleeps
-	Outage         Outage    // the source could not be asked last tick, and since when
-	Reported       Reported  // what has already been said about the current situation
+	// RefreshWake: awake only so the group commits again before its offsets expire (ADR 15).
+	// Such a job may sleep again after min-awake without a fresh idle window. Input clears it.
+	RefreshWake bool
+	Outage      Outage   // the source could not be asked last tick, and since when
+	Reported    Reported // what has already been said about the current situation
 }
 
 // Outage is the source's reachability as of the last tick. It drives one event per edge.
@@ -82,6 +85,7 @@ func (s State) Data() map[string]string {
 		"suspend-stalled":   strconv.FormatBool(s.Reported.SuspendStalled),
 		"sources-checked":   s.Reported.SourcesChecked,
 		"sources":           strings.Join(s.Sources, ","),
+		"refresh-wake":      strconv.FormatBool(s.RefreshWake),
 	}
 }
 
@@ -121,6 +125,7 @@ func FromData(d map[string]string) (State, bool) {
 	s.Reported.ResumeStalled, _ = strconv.ParseBool(d["resume-stalled"])
 	s.Reported.SuspendStalled, _ = strconv.ParseBool(d["suspend-stalled"])
 	s.Reported.SourcesChecked = d["sources-checked"]
+	s.RefreshWake, _ = strconv.ParseBool(d["refresh-wake"])
 	for _, t := range strings.Split(d["sources"], ",") {
 		if t != "" {
 			s.Sources = append(s.Sources, t)
