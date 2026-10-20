@@ -41,11 +41,11 @@ jobs:
   e2e:
     needs: [test, prepare]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
-        scenario: [suspend-resume, job-graph, outage, admission-gc, restart-budget, sources-auto]
+        scenario: [suspend-resume, job-graph, outage, admission-gc, restart-budget, sources-auto, group-offsets]
     name: e2e ${{ matrix.scenario }}
     steps:
       - uses: actions/checkout@v7
