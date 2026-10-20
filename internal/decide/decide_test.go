@@ -116,6 +116,17 @@ func TestDecide(t *testing.T) {
 	}
 }
 
+// Input that arrives while the operator is still suspending wakes the job once it is done.
+func TestInputDuringSuspendIsKept(t *testing.T) {
+	d := New(rp)
+	still := Live{SpecJobState: "suspended", UpgradeMode: "savepoint", JobState: "RUNNING", LifecycleState: "STABLE"}
+	got := d.Decide(auto, suspendedState(), still, seen(snap("101")), t0.Add(time.Minute))
+	got = d.Decide(auto, got.Next, suspended, seen(snap("101")), t0.Add(2*time.Minute))
+	if got.Action != Resume {
+		t.Fatalf("one record during the savepoint must still wake the job, got %s (%s)", got.Action, got.Reason)
+	}
+}
+
 func TestRestartBudgetThenUnrecoverable(t *testing.T) {
 	d := New(rp)
 	failed := Live{SpecJobState: "running", JobState: "FAILED", LifecycleState: "STABLE"}

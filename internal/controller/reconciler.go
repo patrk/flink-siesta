@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -282,6 +283,9 @@ func (r *Reconciler) observe(ctx context.Context, req ctrl.Request, fd *unstruct
 	if pol.ConsumerGroup != "" && r.Lag != nil {
 		obs.Pending, err = timed("lag", func() (int64, error) { return r.Lag.Lag(pctx, pol.ConsumerGroup, pol.Sources) })
 		obs.LagKnown = known(log, "lag", err)
+		if errors.Is(err, probe.ErrNoCommit) {
+			obs.Uncommitted = err.Error()
+		}
 	}
 	// With idle: job, the job is also asked whether it objects to sleeping.
 	if pol.IdleFromJob && obs.Known {
@@ -299,7 +303,8 @@ func (r *Reconciler) observe(ctx context.Context, req ctrl.Request, fd *unstruct
 }
 
 // report raises the events that describe an edge, never a tick, and records in the next state
-// that they were raised: reachability, a suspend completed without a savepoint, a stalled resume.
+// that they were raised: reachability, a held resume, a suspend completed without a savepoint,
+// a stalled resume.
 func (r *Reconciler) report(fd *unstructured.Unstructured, pol policy.Policy, prev state.State, live decide.Live, obs decide.Observation, d decide.Decision, now time.Time) decide.Decision {
 	// Each outage is named by when it began: the events API folds identical events into a
 	// series that surfaces late, and two outages deserve two lines in kubectl describe.
@@ -313,6 +318,14 @@ func (r *Reconciler) report(fd *unstructured.Unstructured, pol policy.Policy, pr
 			"offsets readable again after "+now.Sub(prev.Outage.Since).Round(time.Second).String()+"; down since "+prev.Outage.Since.UTC().Format(time.RFC3339))
 	}
 	d.Next.Outage.Down = !obs.Known
+
+	// A job resuming from group offsets whose group has none left is held asleep (ADR 15). Said
+	// once, when the hold begins: the reason on the object carries it from then on.
+	if d.Held == "offsets-missing" && prev.Reason != d.Next.Reason {
+		r.event(fd, corev1.EventTypeWarning, "ResumeHeld", "Resume",
+			"group "+pol.ConsumerGroup+" has no committed offsets, expired or never written: "+obs.Uncommitted+
+				". Resuming would start the source from its reset strategy. Restore the offsets, or set spec.job.state: running to accept that")
+	}
 
 	// The first time the operator reports our suspend as complete, check it took a savepoint.
 	// It falls back to last-state when a savepoint fails; the job still resumes, from an older
@@ -499,6 +512,9 @@ func gateTrace(pol policy.Policy, prev state.State, live decide.Live, obs decide
 	}
 	if pol.ConsumerGroup != "" {
 		kv = append(kv, "group", pol.ConsumerGroup, "lagKnown", obs.LagKnown, "pending", obs.Pending)
+		if obs.Uncommitted != "" {
+			kv = append(kv, "uncommitted", obs.Uncommitted)
+		}
 	}
 	if pol.IdleFromJob {
 		kv = append(kv, "jobGate", d.Gate.String(), "jobNote", d.GateNote)
@@ -573,7 +589,7 @@ func (r *Reconciler) event(fd *unstructured.Unstructured, kind, reason, action, 
 // Shadow mode must never write a state the cluster is not actually in.
 func shadow(prev state.State, d decide.Decision) decide.Decision {
 	next := d.Next
-	next.Phase, next.SuspendedAt, next.AwakeSince, next.Restarts, next.ResumedAt = prev.Phase, prev.SuspendedAt, prev.AwakeSince, prev.Restarts, prev.ResumedAt
+	next.Phase, next.SuspendedAt, next.AwakeSince, next.Restarts, next.ResumedAt, next.RefreshWake = prev.Phase, prev.SuspendedAt, prev.AwakeSince, prev.Restarts, prev.ResumedAt, prev.RefreshWake
 	next.Reason = "dry-run: would " + d.Action.String() + ": " + d.Reason
 	return decide.Decision{Action: decide.None, Next: next, Reason: next.Reason}
 }

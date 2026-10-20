@@ -4,7 +4,7 @@
 
 The Flink Kubernetes Operator can suspend a running job and later restore it from its savepoint. You do that by setting `spec.job.state` to `suspended` and back to `running` on the FlinkDeployment, as described in the operator's [job management documentation](https://nightlies.apache.org/flink/flink-kubernetes-operator-docs-main/docs/custom-resource/job-management/). The operator has no notion of "this job has had no input for two weeks", and its autoscaler never goes below one running JobManager.
 
-Siesta automates that step. Once a minute it reads the end offsets of the topics a job consumes with a single admin call. When nothing has moved for `idle-after`, and the job has consumed everything if you gave it the consumer group, it sets `spec.job.state: suspended`. The operator takes a savepoint and tears the job down. Your `upgradeMode` decides how, and the controller never changes it. When the offsets move, the controller sets `spec.job.state: running`, the operator restores from the savepoint, and the Kafka source continues exactly where it stopped. It also restarts failing jobs within a persisted budget.
+Siesta automates that step. Once a minute it reads the end offsets of the topics a job consumes with a single admin call. When nothing has moved for `idle-after`, and the job has consumed everything if you gave it the consumer group, it sets `spec.job.state: suspended`. The operator takes a savepoint and tears the job down. Your `upgradeMode` decides how, and the controller never changes it. When the offsets move, the controller sets `spec.job.state: running`, the operator restores from the savepoint, and the Kafka source continues exactly where it stopped. With `last-state` the operator takes no savepoint and restores from the latest checkpoint instead. A `stateless` job has no state to restore, and sleeps only if its Kafka source resumes from the consumer group's committed offsets and you say so, see [stateless jobs](#stateless-jobs-that-resume-from-the-consumer-group). It also restarts failing jobs within a persisted budget.
 
 ```mermaid
 %%{init: {"look": "handDrawn", "theme": "base", "themeVariables": {"primaryColor": "#cbe7fb", "primaryTextColor": "#0b2951", "primaryBorderColor": "#0b2951", "lineColor": "#0b2951", "secondaryColor": "#e6f2fc", "tertiaryColor": "#ffffff", "edgeLabelBackground": "#ffffff"}}}%%
@@ -42,26 +42,35 @@ sequenceDiagram
 
 ## How a suspend is decided
 
-A suspend has to pass a chain of gates, in a fixed order. Each gate can only say "not yet". The first one that does is named in the controller's log line and in the `siesta_held_awake` metric, and the gates after the broker's, a refusal, the consumer group and the job, write their answer as the reason on the object. Nothing on the wake side has gates: the broker's end offsets moving is the only wake signal, because a suspended job has no JobManager to ask.
+A suspend has to pass a chain of gates, in a fixed order. Each gate can only say "not yet". The first one that does is named in the controller's log line and in the `siesta_held_awake` metric, and the gates after the broker's, a refusal, the consumer group and the job, write their answer as the reason on the object. The wake side has one gate, and only for a stateless job resuming from group offsets: the group must still have its offsets. Otherwise the broker's end offsets moving is the only wake signal, because a suspended job has no JobManager to ask.
 
 ```mermaid
 %%{init: {"look": "handDrawn", "theme": "base", "themeVariables": {"primaryColor": "#cbe7fb", "primaryTextColor": "#0b2951", "primaryBorderColor": "#0b2951", "lineColor": "#0b2951", "secondaryColor": "#e6f2fc", "tertiaryColor": "#ffffff", "edgeLabelBackground": "#ffffff"}}}%%
 flowchart TD
     A["job STABLE and RUNNING,<br>operator not mid-change"] --> B["idle-after elapsed<br>min-awake elapsed"]
-    B --> C["keeps position on suspend<br>savepoint or last-state"]
+    B --> C["keeps position on suspend<br>savepoint or last-state,<br>or stateless with resume-from"]
     C --> D["consumer group caught up<br>only with consumer-group"]
     D --> E["job has nothing left to do<br>only with idle: job"]
     E --> S["spec.job.state: suspended"]
-    C -. stateless .-> R["Refused, once"]
+    C -. stateless without resume-from .-> R["Refused, once"]
     D -. lag unknown or above zero .-> H["held awake<br>reason on the object"]
     E -. busy or unknown .-> H
 ```
 
 Unknown never acts. A probe that could not be asked, a lag that could not be measured, a job that could not be reached: each blocks a suspend and never causes one, and none of them wakes a job.
 
-With `consumer-group`, idle also means caught up: the group's committed offsets equal the end offsets. Flink commits those offsets only on checkpoints, so this needs checkpointing on.
+With `consumer-group`, idle also means caught up: the group's committed offsets equal the end offsets. Flink commits those offsets when a checkpoint completes, or, with checkpointing off, on the Kafka client's auto-commit interval if `enable.auto.commit` is on. Without either the group never commits and the lag stays unknown.
 
 With `idle: job`, the controller compares each declared partition's end offset with the last offset the job's reader emitted, which is the position a savepoint would record, and reads the source's own idle time. Records still to emit, or a record emitted within the last poll interval, hold the suspend with `job busy` on the object. An unreachable REST API holds it with `job unknown`, which is how a missing network policy shows up. This needs no consumer group, no checkpointing and no group ACL, and it never wakes a job.
+
+## Stateless jobs that resume from the consumer group
+
+A `stateless` deployment restarts with empty state. If its Kafka source is built with `OffsetsInitializer.committedOffsets(...)`, it starts from the offsets its consumer group last committed, and that is the job's position. `resume-from: group-offsets` tells the controller so. It needs `consumer-group`, the group the source commits to, and it has no effect under `savepoint` or `last-state`, where the restored state wins over the group.
+
+- **Suspend.** The usual gates, with the lag gate always on: the job sleeps only when the group's committed offsets equal the end offsets. The operator cancels a stateless job without a final checkpoint, so a commit that has not happened yet would be read again on resume. At lag zero there is nothing left to read. Other state, windows and joins, is lost, as on any restart of a stateless job.
+- **Commits.** The source commits when a checkpoint completes, or, with checkpointing off and `enable.auto.commit=true`, every `auto.commit.interval.ms`. An auto-commit records what the consumer fetched, not what the sinks wrote. After a whole idle window at lag zero the two agree, so a suspend is no worse than the restarts the job already has.
+- **Offset expiry.** A suspended job commits nothing, and the broker deletes a group's offsets `offsets.retention.minutes` after its last commit: seven days by default, and on Confluent Cloud not something you set. A job that slept longer would resume from its reset strategy and replay or skip the topic. Two things prevent that. `max-sleep`, six days by default, wakes the job without input. It runs for `min-awake`, commits, and once the group has caught up it goes back to sleep without waiting a new idle window. Set `min-awake` above the job's start-up time plus one commit interval. And before any resume the controller checks that the group still has offsets for every partition. If it does not, the job stays asleep with `ResumeHeld` and the reason `resume held: ...`. Restore the offsets, and the held input resumes the job, or set `spec.job.state: running` yourself to accept the replay. `mode: off` is the same human decision and resumes without the check.
+- **New partitions.** A partition added to a topic while the job sleeps has no committed offset either, and holds the resume the same way.
 
 Manual changes are respected. A job someone else suspends is left alone and marked `suspended outside siesta`. A job someone else resumes is treated as awake with a fresh idle window. And a dry run, `config.dryRun`, records every decision in the reason annotation without acting.
 
@@ -77,6 +86,8 @@ The prefix is configurable through `--annotation-prefix` and defaults to `siesta
 | `<prefix>/idle` | you | optional. `job` adds the running job's own view as the last gate, described above. Needs no consumer group. |
 | `<prefix>/idle-after` | you | a duration such as `336h` or `14d` |
 | `<prefix>/min-awake` | you | a duration, default `1h` |
+| `<prefix>/resume-from` | you | optional. `group-offsets` lets a `stateless` job sleep whose Kafka source resumes from the consumer group's committed offsets. Needs `consumer-group`. |
+| `<prefix>/max-sleep` | you | a duration, default `6d`. With `resume-from: group-offsets`, the longest a job sleeps before it is woken to commit again. `0` switches it off. |
 | `<prefix>/restart` | you | `auto`, the default, or `off` |
 | `<prefix>/bootstrap-servers` | you | reserved for a per-deployment Kafka cluster, not implemented yet. Setting it raises `InvalidPolicy`, so that implementing it later breaks nothing. |
 | `<prefix>/state` | controller | `active`, `suspended` or `unrecoverable` |
@@ -98,7 +109,7 @@ The controller's own memory, the offsets per topic, timestamps, the restart budg
 
 ## Limits
 
-These follow from what suspending a Flink job means, and Siesta cannot remove them. Processing time stops while a job is suspended: processing-time timers and windows fire late, all at once, after a resume, while event-time jobs are unaffected, so only suspend jobs whose semantics survive a pause. Group lag needs checkpointing, as above. Application mode only: a `FlinkSessionJob` has no pods of its own to take down and no lifecycle state to key on.
+These follow from what suspending a Flink job means, and Siesta cannot remove them. Processing time stops while a job is suspended: processing-time timers and windows fire late, all at once, after a resume, while event-time jobs are unaffected, so only suspend jobs whose semantics survive a pause. Group lag needs commits, from checkpoints or auto-commit, as above. Application mode only: a `FlinkSessionJob` has no pods of its own to take down and no lifecycle state to key on.
 
 ## Alternatives
 

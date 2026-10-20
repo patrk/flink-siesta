@@ -16,3 +16,6 @@ restart budget: the edit is the human saying "try again".
 **Consequences.** The controller cannot change the semantics of a rollout it did not make.
 Users of stateless deployments get a clear message instead of a replay. One more field read
 from the object, `upgradeMode`, and one more annotation, `generation`.
+
+**Amended** by ADR 15: a `stateless` job whose Kafka source resumes from its consumer group's
+offsets may sleep when its annotations say so. The controller still never changes `upgradeMode`.

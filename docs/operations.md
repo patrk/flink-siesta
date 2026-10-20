@@ -14,11 +14,12 @@ Every transition and every situation worth a human's attention is an Event on th
 | Event | When |
 |---|---|
 | `Suspended`, `Resumed`, `Restarted` | the controller changed `spec.job.state` or `spec.restartNonce`. The message is the reason |
-| `Refused` | a `stateless` job became idle. Said once per reason, not once per minute, and counted as one transition. In a dry run no event is raised, but the reason reads `dry-run: would refuse` and `siesta_dry_run_would_act{action="refuse"}` lists the jobs that would sleep once they run with a savepoint-preserving upgrade mode |
+| `Refused` | a `stateless` job without `resume-from: group-offsets` became idle. Said once per reason, not once per minute, and counted as one transition. In a dry run no event is raised, but the reason reads `dry-run: would refuse` and `siesta_dry_run_would_act{action="refuse"}` lists the jobs that would sleep once they run with a savepoint-preserving upgrade mode |
 | `Unrecoverable` | the restart budget is exhausted, or the failure matched an unrecoverable pattern. Fix the cause, then edit the FlinkDeployment spec: a new generation resets the state and the restart budget |
 | `InvalidPolicy` | an annotation value the controller cannot read, said once. The job is left untouched until you fix it |
 | `SourceUnreachable`, `SourceReachable` | the broker stopped answering, and answered again. One event per edge, never per tick, and nothing happens in between. The messages name when the outage began and how long it lasted |
 | `SuspendedWithoutSavepoint` | the operator completed the suspend but the savepoint failed, so it fell back to its last checkpoint. The resume still works from that checkpoint. A common cause is that the operator asks for canonical savepoints by default and some operators cannot produce them, the Print sink on Flink 2.x for one. If the job only ever resumes on the same state backend, set `kubernetes.operator.savepoint.format.type: NATIVE` in its `flinkConfiguration` |
+| `ResumeHeld` | a stateless job resuming from group offsets had input, or reached `max-sleep`, but its consumer group has no committed offsets: expired, deleted or never written. Resuming would start from the source's reset strategy, so the job stays asleep. Said once per hold. Restore the group's offsets and the job resumes on the next tick, or set `spec.job.state: running` to accept the replay |
 | `SuspendStalled`, `ResumeStalled` | the operator has not completed a suspend, or a resumed job is not RUNNING, after `--resume-stall-after`, ten minutes by default. Said once. The usual causes are a full cluster, a missing image or a savepoint that no longer restores |
 | `SourcesVerified`, `SourcesDrift`, `SourcesUnverified` | once per job instance, the written `sources` compared with what the job's Kafka sources read. Never corrected |
 | `SourcesLearned` | with `sources: auto`, the topics learned from the job and remembered |
@@ -39,7 +40,7 @@ Metrics are exposed on `:8080/metrics` next to controller-runtime's own reconcil
 | `siesta_resume_latency_seconds` | histogram | how long from the input that woke a job until it reports RUNNING |
 | `siesta_probe_errors_total{kind}` | counter | how often Kafka or the job's REST API could not be asked |
 | `siesta_probe_duration_seconds{kind}` | histogram | how long each probe takes, by kind |
-| `siesta_held_awake{namespace,name,gate}` | gauge | which gate keeps an idle job awake: min-awake, lag-unknown, lag-pending, job-unknown, job-busy |
+| `siesta_held_awake{namespace,name,gate}` | gauge | which gate keeps an idle job awake: min-awake, lag-unknown, lag-pending, job-unknown, job-busy. For a stateless job resuming from group offsets, offsets-missing and lag-unknown also name what keeps it asleep |
 | `siesta_suspended_seconds_total{namespace,name}` | counter | how long each job has slept, in total |
 | `siesta_suspended_since_timestamp_seconds{namespace,name}` | gauge | when the current sleep began, 0 while awake |
 | `siesta_released_cpu_cores{namespace,name}`, `siesta_released_memory_bytes{namespace,name}` | gauge | the JobManager and TaskManager footprint the cluster has back while a job sleeps, 0 while awake |
@@ -48,5 +49,5 @@ Metrics are exposed on `:8080/metrics` next to controller-runtime's own reconcil
 
 The last two turn a dry run on an existing namespace into an inventory: sort by `siesta_idle_seconds` and read `siesta_dry_run_would_act{action="suspend"}` to see which jobs would sleep, and `action="refuse"` to see which are idle but run `stateless`. The savings over a month are `sum(avg_over_time(siesta_released_cpu_cores[30d])) * 720` core-hours, and the same with memory.
 
-Metrics describe what the controller did. Nothing in the controller reads them. They observe, they never decide. Two alerts are worth having, probe errors for ten minutes and any job marked unrecoverable. Both are in `docs/alerts.yaml`, and a dashboard for every metric above is in `docs/grafana/`.
+Metrics describe what the controller did. Nothing in the controller reads them. They observe, they never decide. Three alerts are worth having: probe errors for ten minutes, any job marked unrecoverable, and a stateless job whose resume is held because its group lost its offsets. All three are in `docs/alerts.yaml`, and a dashboard for every metric above is in `docs/grafana/`.
 
