@@ -54,6 +54,10 @@ func TestStatelessResumeFromGroupOffsets(t *testing.T) {
 		t.Fatalf("a caught-up stateless job resuming from group offsets must sleep, events %v", rec.reasons)
 	}
 	setStatus(t, c, fd, map[string]any{"lifecycleState": "SUSPENDED"})
+	tick(1)
+	if rec.count("SuspendedWithoutSavepoint") != 0 {
+		t.Fatalf("a job that resumes from the group needs no savepoint, events %v", rec.reasons)
+	}
 
 	// Input arrives, but the group's offsets are gone.
 	offsets["in"] = "6"

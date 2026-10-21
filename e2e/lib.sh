@@ -35,7 +35,7 @@ wait_on() { # like wait_for, substring match
     sleep 5; done; }
 until_count() { # $1 = description, $2 = timeout s, $3.. = command that prints a number, waits until it prints $EXPECT
   local what=$1 timeout=$2; shift 2; local i=0
-  until [ "$("$@")" = "$EXPECT" ]; do i=$((i+5)); [ $i -ge "$timeout" ] && { echo "timeout: $what"; events | grep -E '^(Source|Suspended|Resumed|Restarted)'; exit 1; }; sleep 5; done; }
+  until [ "$("$@")" = "$EXPECT" ]; do i=$((i+5)); [ $i -ge "$timeout" ] && { echo "timeout: $what"; events | grep -E '^(Source|Suspended|Resumed|ResumeHeld|Restarted)'; exit 1; }; sleep 5; done; }
 reason() { k -n $ns get flinkdeployment "$fd" -o jsonpath='{.metadata.annotations.siesta\.flink\.io/reason}'; }
 
 # Events outlive deleted objects by an hour; select by UID so earlier runs do not show up.

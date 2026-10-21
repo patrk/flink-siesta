@@ -40,9 +40,9 @@ func (l Live) keepsPosition() bool {
 	return l.UpgradeMode == "savepoint" || l.UpgradeMode == "last-state"
 }
 
-// resumesFromGroup: the job restarts without state and its Kafka source starts from the
+// ResumesFromGroup: the job restarts without state and its Kafka source starts from the
 // consumer group's committed offsets (ADR 15). Then the group's offsets are its position.
-func (l Live) resumesFromGroup(p policy.Policy) bool {
+func (l Live) ResumesFromGroup(p policy.Policy) bool {
 	return p.ResumeFromGroup && l.UpgradeMode == "stateless"
 }
 
@@ -210,7 +210,7 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, obs Obser
 			// in flight. Writing "running" now would race it. Record activity, act next time.
 			return Decision{Action: None, Next: pending, Reason: ReasonOperatorSuspends}
 		}
-		fromGroup := live.resumesFromGroup(p)
+		fromGroup := live.ResumesFromGroup(p)
 		// A job resuming from group offsets is woken before the broker expires them, and put
 		// back to sleep by the usual gates once it has committed again (ADR 15).
 		refresh := !moved && fromGroup && p.MaxSleep > 0 && now.After(prev.SuspendedAt.Add(p.MaxSleep))
@@ -293,13 +293,13 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, obs Obser
 			}
 		}
 		// A refresh wake still counts as idle: no input has arrived since the job went to sleep.
-		idle := now.After(cur.LastActivityAt.Add(p.IdleAfter)) || (cur.RefreshWake && live.resumesFromGroup(p))
+		idle := now.After(cur.LastActivityAt.Add(p.IdleAfter)) || (cur.RefreshWake && live.ResumesFromGroup(p))
 		if p.Mode == policy.ModeAuto &&
 			live.stable() && live.SpecJobState == "running" && idle {
 			if !now.After(cur.AwakeSince.Add(p.MinAwake)) {
 				return Decision{Action: None, Next: cur, Reason: ReasonActive, Held: "min-awake", ResumedAfter: resumedAfter}
 			}
-			if !live.keepsPosition() && !live.resumesFromGroup(p) {
+			if !live.keepsPosition() && !live.ResumesFromGroup(p) {
 				cur.Reason = reasonRefused(live.UpgradeMode)
 				return Decision{Action: Refuse, Next: cur, Reason: cur.Reason}
 			}

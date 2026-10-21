@@ -329,10 +329,11 @@ func (r *Reconciler) report(fd *unstructured.Unstructured, pol policy.Policy, pr
 
 	// The first time the operator reports our suspend as complete, check it took a savepoint.
 	// It falls back to last-state when a savepoint fails; the job still resumes, from an older
-	// checkpoint, and an operator on call should know.
+	// checkpoint, and an operator on call should know. A job that resumes from its group's
+	// offsets takes no savepoint by design.
 	if d.Next.Phase == state.Suspended && !prev.Reported.SuspendChecked && live.LifecycleState == "SUSPENDED" {
 		d.Next.Reported.SuspendChecked = true
-		if live.SavepointPath == "" {
+		if live.SavepointPath == "" && !live.ResumesFromGroup(pol) {
 			r.event(fd, corev1.EventTypeWarning, "SuspendedWithoutSavepoint", "Suspend", "operator completed the suspend without a savepoint; resume will use the last checkpoint")
 		}
 	}

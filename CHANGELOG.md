@@ -6,6 +6,8 @@
 - `max-sleep`, six days by default, wakes such a job before the broker expires its group's offsets. It commits, and sleeps again after `min-awake` without a new idle window.
 - A resume whose group has no committed offsets is held with a `ResumeHeld` Warning instead of starting the source from its reset strategy. The held input still wakes the job once the offsets are back.
 - Fix: input that arrived while the operator was still suspending was absorbed into memory, so the job slept on until the next record. It now resumes the job once the suspend completes.
+- Fix: `SuspendedWithoutSavepoint` was raised on every sleep of a job that resumes from group offsets, which takes no savepoint by design.
+- The `group-offsets` e2e scenario runs that mode against the real operator: a stateless job with auto-commit and no checkpoints, a broker that expires offsets after four minutes, two `max-sleep` wakes, and a held resume. The e2e job gains `--starting-offsets committed`, `--auto-commit-ms` and `--out`, a Kafka sink that makes a replay visible as a duplicate.
 - `SiestaResumeHeld` in `docs/alerts.yaml`, and `offsets-missing` in `siesta_held_awake`.
 - Not yet run against the real operator: the e2e suite has no stateless job built with `committedOffsets`. The assumption that needs it is that a woken job commits again with no new records, so that `max-sleep` resets the broker's expiry clock. Covered so far by the decider, envtest and a real broker, not by an e2e scenario.
 - The compatibility grid runs operator 1.16.1, and the e2e setup installs the operator chart from `archive.apache.org`, which keeps every release. `downloads.apache.org` drops a patch release when the next one ships, which had the grid failing since 1.16.1.
