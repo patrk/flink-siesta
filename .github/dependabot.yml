@@ -1,0 +1,9 @@
+# Keeps the SHA-pinned actions in the publish job, and the rest, current; the version comment
+# next to each pin is updated with it.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    groups:
+      actions: { patterns: ["*"] }

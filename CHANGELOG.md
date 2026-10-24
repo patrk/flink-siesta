@@ -9,6 +9,9 @@
 - Fix: negative durations were accepted, and a `d` value too large to count wrapped around to a negative one. A negative `idle-after` called every job idle. They now raise `InvalidPolicy`, and so does `idle-after: 0`.
 - Fix: `SiestaJobUnrecoverable` alerted on the transition counter, which Prometheus sees no increase in when its series starts at 1, so the first job marked unrecoverable never fired it, and it cleared after an hour. It now alerts on `siesta_deployment_state{state="unrecoverable"}`.
 - `docs/install.md` no longer says every `stateless` job is refused, and the chart in the repository carries the released version instead of 0.1.0, so `helm install` from a checkout runs a published image.
+- The admission policy now pins every field of the spec but `spec.job.state` and `spec.restartNonce`, and every annotation outside the controller's prefix, labels, finalizers and owner references. It named a few fields before, so the controller's identity could still change `spec.ingress`, `spec.mode` or `allowNonRestoredState`.
+- A second admission policy keeps the controller's ConfigMap writes to its own, named `siesta-<deployment>` and labelled `app.kubernetes.io/managed-by: flink-siesta` before and after the write. Its Role covers every ConfigMap in the namespace, the Flink HA ConfigMaps among them.
+- The release job pins its actions by commit and passes the tag to the shell through the environment, refusing anything but `vX.Y.Z`. The verify command in the release notes accepts only the release workflow's identity. Dependabot keeps the actions current.
 
 ## 0.4.0, 2026-10-24
 
