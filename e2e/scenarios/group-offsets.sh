@@ -15,8 +15,9 @@ k -n $ns set env deploy/kafka KAFKA_OFFSETS_RETENTION_MINUTES=4 KAFKA_OFFSETS_RE
 k -n $ns scale deploy/kafka --replicas=1
 k -n $ns rollout status deploy/kafka --timeout=120s
 until kafka /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1; do sleep 2; done
-kafka /opt/kafka/bin/kafka-configs.sh --bootstrap-server localhost:9092 --describe --entity-type brokers --entity-name 1 --all \
-  | grep -q 'offsets.retention.minutes=4 ' || { echo "the broker did not take the short offset retention"; exit 1; }
+# Captured first: grep -q stops reading at the match, and under pipefail the writer's SIGPIPE fails the check.
+config=$(kafka /opt/kafka/bin/kafka-configs.sh --bootstrap-server localhost:9092 --describe --entity-type brokers --entity-name 1 --all)
+grep -q 'offsets.retention.minutes=4 ' <<<"$config" || { echo "the broker did not take the short offset retention"; exit 1; }
 topic --create --if-not-exists --topic e2e-out --partitions 1 >/dev/null
 
 groups() { kafka /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 --group e2e "$@"; }
