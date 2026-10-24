@@ -101,9 +101,11 @@ func TestSourcesAreVerifiedOncePerJobInstanceAndTheJobGateHoldsTheSuspend(t *tes
 	}
 
 	reconcile()
+	now = now.Add(time.Minute) // the same topics, read sourceSettle apart, are the job's answer
 	reconcile()
-	if rec.count("SourcesDrift") != 1 || job.sources != 1 {
-		t.Fatalf("drift must be reported once and the graph read once per job: events=%v reads=%d", rec.reasons, job.sources)
+	reconcile()
+	if rec.count("SourcesDrift") != 1 || job.sources != 2 {
+		t.Fatalf("drift must be reported once and the graph read twice per job: events=%v reads=%d", rec.reasons, job.sources)
 	}
 	st, _, err := r.Store.Load(ctx, fd)
 	if err != nil || st.Reported.SourcesChecked != "j1" {
@@ -148,7 +150,9 @@ func TestSourcesAreVerifiedOncePerJobInstanceAndTheJobGateHoldsTheSuspend(t *tes
 	job.topics = []string{"in"}
 	setJobID(t, r, fd, "j2")
 	reconcile()
-	if rec.count("SourcesVerified") != 1 || job.sources != 2 {
+	now = now.Add(time.Minute)
+	reconcile()
+	if rec.count("SourcesVerified") != 1 || job.sources != 4 {
 		t.Fatalf("a new job instance must be checked again: events=%v reads=%d", rec.reasons, job.sources)
 	}
 	if st, _, _ = r.Store.Load(ctx, fd); st.Phase != state.Suspended {
@@ -178,5 +182,40 @@ func TestAJobWithoutKafkaSourceMetricsIsReportedUnverified(t *testing.T) {
 	}
 	if rec.count("SourcesUnverified") != 1 || rec.count("SourcesDrift") != 0 || job.sources != 3 {
 		t.Fatalf("events = %v, graph reads = %d", rec.reasons, job.sources)
+	}
+}
+
+// A job restored from a savepoint gets its old splits back from state at once, and a topic it
+// newly reads only when the enumerator discovers it, seconds later. A tick in between sees part
+// of the graph: it must not be taken as the job's answer (the job-graph e2e flake).
+func TestSourcesAreJudgedOnlyOnceTheGraphHoldsStill(t *testing.T) {
+	c := startEnv(t)
+	fd := createDeployment(t, c, "job", "savepoint")
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	r := newReconciler(c, &now, probe.Func(func(context.Context, []string) (map[string]string, error) { return map[string]string{"in": "1"}, nil }))
+	job, rec := &fakeJob{topics: []string{"in"}}, &fakeRecorder{}
+	r.Flink, r.Recorder = job, rec
+	setJobID(t, r, fd, "j1")
+	key := types.NamespacedName{Name: "job", Namespace: "default"}
+	reconcile := func() {
+		t.Helper()
+		if _, err := r.Reconcile(context.Background(), reconcileRequest(key)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reconcile() // the restored split only
+	now = now.Add(5 * time.Second)
+	job.topics = []string{"in", "other"}
+	reconcile() // the discovered topic has shown up
+	now = now.Add(time.Minute)
+	reconcile()
+	if rec.count("SourcesVerified") != 0 || rec.count("SourcesDrift") != 1 {
+		t.Fatalf("the job reads in and other, the annotation lists in: events = %v", rec.reasons)
+	}
+	now = now.Add(time.Minute)
+	reconcile()
+	if rec.count("SourcesDrift") != 1 || job.sources != 3 {
+		t.Fatalf("once settled, the graph is not read again: events = %v, reads = %d", rec.reasons, job.sources)
 	}
 }

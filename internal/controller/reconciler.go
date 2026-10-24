@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -427,6 +428,8 @@ type cachedJob struct {
 	id       string
 	src      flink.Sources
 	attempts int
+	since    time.Time // when src's topics were first read; a changed answer starts over
+	last     time.Time // when they were last read
 }
 
 // sourceAttempts is how many ticks a running job gets to show its Kafka source metrics before
@@ -434,9 +437,16 @@ type cachedJob struct {
 // few seconds after the job reports RUNNING, so the first tick is often too early.
 const sourceAttempts = 3
 
+// sourceSettle is how long the topics a job shows must hold still before they are its answer.
+// A job restored from a savepoint gets its old splits back from state at once, and a topic it
+// newly reads only once the enumerator discovers it; the metrics reach the REST API on the
+// fetcher's interval, ten seconds by default. A tick in between sees part of the graph.
+const sourceSettle = 30 * time.Second
+
 // jobSources returns what the running job says about its sources. ok=false when there is no
-// REST probe, no running job, or the call failed. settled=true once topics were found, or the
-// job had its chances: only then is the answer worth an event, and it is cached per job id.
+// REST probe, no running job, or the call failed. settled=true once the same topics were read
+// sourceSettle apart, or a job without any had its chances: only then is the answer worth an
+// event, and it is cached per job id.
 func (r *Reconciler) jobSources(ctx context.Context, req ctrl.Request, live decide.Live) (src flink.Sources, ok, settled bool) {
 	if r.Flink == nil || live.JobID == "" || live.JobState != "RUNNING" {
 		return flink.Sources{}, false, false
@@ -445,16 +455,21 @@ func (r *Reconciler) jobSources(ctx context.Context, req ctrl.Request, live deci
 	if cached.id != live.JobID {
 		cached = cachedJob{id: live.JobID}
 	}
-	if len(cached.src.Topics) > 0 || cached.attempts >= sourceAttempts {
+	stable := func(c cachedJob) bool { return len(c.src.Topics) > 0 && c.last.Sub(c.since) >= sourceSettle }
+	if stable(cached) || (len(cached.src.Topics) == 0 && cached.attempts >= sourceAttempts) {
 		return cached.src, true, true
 	}
 	src, err := timed("flink-rest", func() (flink.Sources, error) { return r.Flink.Sources(ctx, req.Namespace, req.Name, live.JobID) })
 	if !known(ctrl.LoggerFrom(ctx), "flink-rest", err) {
 		return flink.Sources{}, false, false
 	}
-	cached.src, cached.attempts = src, cached.attempts+1
+	now := r.Now()
+	if cached.attempts == 0 || !slices.Equal(src.Topics, cached.src.Topics) {
+		cached.since = now
+	}
+	cached.src, cached.attempts, cached.last = src, cached.attempts+1, now
 	r.memo.setJob(req.String(), cached)
-	return src, true, len(src.Topics) > 0 || cached.attempts >= sourceAttempts
+	return src, true, stable(cached) || (len(src.Topics) == 0 && cached.attempts >= sourceAttempts)
 }
 
 // learnSources is verifySources for sources: auto: the job graph is the source of truth, and

@@ -11,6 +11,7 @@
 - `SiestaResumeHeld` in `docs/alerts.yaml`, and `offsets-missing` in `siesta_held_awake`.
 - Run against the real operator by the `group-offsets` e2e scenario: a woken job commits again with no new records, so `max-sleep` resets the broker's expiry clock.
 - The compatibility grid runs operator 1.16.1, and the e2e setup installs the operator chart from `archive.apache.org`, which keeps every release. `downloads.apache.org` drops a patch release when the next one ships, which had the grid failing since 1.16.1.
+- Fix: a job restored from a savepoint could be verified on part of its graph, its old topics before the newly added one showed up, and report `SourcesVerified` instead of `SourcesDrift`. The topics now count once two reads 30 seconds apart agree. This was the `job-graph` flake in the grid.
 - The Kafka integration test waits for the group coordinator instead of passing on its first transient error.
 
 ## 0.3.1, 2026-09-16
