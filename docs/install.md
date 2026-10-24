@@ -13,7 +13,7 @@
 
 The image and the chart are published to the GitHub Container Registry on every tag.
 
-    helm install siesta oci://ghcr.io/patrk/charts/flink-siesta --version 0.4.0 \
+    helm install siesta oci://ghcr.io/patrk/charts/flink-siesta --version 0.4.1 \
       --set kafka.bootstrapServers=... --set kafka.securityProtocol=SASL_SSL \
       --set kafka.sasl.existingSecret=kafka-auth
 
@@ -104,6 +104,10 @@ RBAC grants `patch` on FlinkDeployments and writes on ConfigMaps, and RBAC can b
 Release images and charts carry SLSA provenance and an SBOM, and they are signed with cosign, keyless, by the release workflow's identity. The release notes show the verify command.
 
 ## Upgrading
+
+From 0.3.x or 0.4.x, `helm upgrade` is enough. 0.4.1 adds a second admission policy, for ConfigMaps, and one key to the memory in them, `restarting-since`, which 0.4.0 ignores.
+
+Rolling back within 0.4 is a `helm rollback`. Rolling back to 0.3 with jobs asleep under `resume-from: group-offsets` is not safe: 0.3 knows neither the mode nor `max-sleep`, so nothing wakes those jobs before the broker expires their group's offsets, and a resume after that starts from the reset strategy. Set `mode: off` on them first, which resumes them, and roll back once they run.
 
 From 0.2.x, `helm upgrade` is enough. The Role gains `patch` on events, the admission objects are renamed to include the namespace, and memory in the ConfigMaps is read as before.
 
