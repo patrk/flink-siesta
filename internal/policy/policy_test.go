@@ -28,6 +28,12 @@ func TestReadReportsProblemsInsteadOfDefaultingSilently(t *testing.T) {
 		{"resume from group offsets needs the group", map[string]string{p + "/mode": "auto", p + "/sources": "t", p + "/resume-from": "group-offsets"}, true, 1, 14 * 24 * time.Hour},
 		{"bad resume-from", map[string]string{p + "/mode": "auto", p + "/sources": "t", p + "/resume-from": "earliest"}, true, 1, 14 * 24 * time.Hour},
 		{"garbage max-sleep", map[string]string{p + "/mode": "auto", p + "/sources": "t", p + "/max-sleep": "a week"}, true, 1, 14 * 24 * time.Hour},
+		{"negative idle-after", map[string]string{p + "/mode": "auto", p + "/sources": "t", p + "/idle-after": "-1h"}, true, 1, 14 * 24 * time.Hour},
+		{"zero idle-after", map[string]string{p + "/mode": "auto", p + "/sources": "t", p + "/idle-after": "0"}, true, 1, 14 * 24 * time.Hour},
+		{"idle-after too large to count", map[string]string{p + "/mode": "auto", p + "/sources": "t", p + "/idle-after": "200000d"}, true, 1, 14 * 24 * time.Hour},
+		{"negative min-awake", map[string]string{p + "/mode": "auto", p + "/sources": "t", p + "/min-awake": "-5m"}, true, 1, 14 * 24 * time.Hour},
+		{"zero min-awake", map[string]string{p + "/mode": "auto", p + "/sources": "t", p + "/min-awake": "0"}, true, 0, 14 * 24 * time.Hour},
+		{"negative max-sleep", map[string]string{p + "/mode": "auto", p + "/sources": "t", p + "/max-sleep": "-1d"}, true, 1, 14 * 24 * time.Hour},
 		{"bootstrap-servers is reserved", map[string]string{p + "/mode": "auto", p + "/sources": "t", p + "/bootstrap-servers": "b:9092"}, true, 1, 14 * 24 * time.Hour},
 	}
 	for _, c := range cases {

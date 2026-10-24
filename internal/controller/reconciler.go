@@ -52,8 +52,8 @@ type Reconciler struct {
 	Recorder recorder.EventRecorder
 	Now      func() time.Time // injectable clock; tests freeze it
 	Store    store.Store
-	// PollInterval is how often each deployment is revisited; ProbeTimeout bounds the probes of one tick
-	// so a hung broker degrades to "unknown" for one deployment instead of freezing the worker.
+	// PollInterval is how often each deployment is revisited; ProbeTimeout bounds the Kafka reads of one tick
+	// and each of its REST calls, so a hung broker degrades to "unknown" for one deployment instead of freezing the worker.
 	PollInterval     time.Duration
 	ProbeTimeout     time.Duration
 	ResumeStallAfter time.Duration // warn once if a resumed job is not RUNNING after this
@@ -82,10 +82,14 @@ func (r *Reconciler) probeTimeout() time.Duration {
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Only objects that carry <prefix>/mode reach Reconcile, plus the one update that removes
-	// it, so the state annotation and the ConfigMap can be cleared instead of going stale.
+	// it, so the state annotation and the ConfigMap can be cleared instead of going stale. An
+	// object that still carries our state without a mode is a release not yet finished, waiting
+	// for a suspend to complete or interrupted by a restart: it reaches Reconcile too.
 	ours := func(o client.Object) bool {
-		_, ok := o.GetAnnotations()[r.Prefix+"/mode"]
-		return ok
+		ann := o.GetAnnotations()
+		_, mode := ann[r.Prefix+"/mode"]
+		_, marked := ann[r.Prefix+"/state"]
+		return mode || marked
 	}
 	hasPolicy := predicate.Funcs{
 		CreateFunc:  func(e event.CreateEvent) bool { return ours(e.Object) },
@@ -112,7 +116,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	pol, ours := policy.Read(r.Prefix, fd.GetAnnotations())
 	if !ours {
-		return ctrl.Result{}, r.release(ctx, req, fd)
+		return r.release(ctx, req, fd)
 	}
 	now := r.Now()
 	live := flink.Live(fd)
@@ -208,20 +212,36 @@ func (r *Reconciler) load(ctx context.Context, fd *unstructured.Unstructured, li
 }
 
 // release is the exit for a deployment that stopped being ours: someone removed the policy.
-// Our two annotations and the ConfigMap go with it, so nothing stale is left to mislead.
-func (r *Reconciler) release(ctx context.Context, req ctrl.Request, fd *unstructured.Unstructured) error {
-	if _, marked := fd.GetAnnotations()[r.Prefix+"/state"]; !marked {
-		return nil
+// Our two annotations and the ConfigMap go with it, so nothing stale is left to mislead. A job
+// we put to sleep is handed back awake, as mode: off would: once our annotations are gone,
+// nothing would ever wake it.
+func (r *Reconciler) release(ctx context.Context, req ctrl.Request, fd *unstructured.Unstructured) (ctrl.Result, error) {
+	phase, marked := fd.GetAnnotations()[r.Prefix+"/state"]
+	if !marked {
+		return ctrl.Result{}, nil
 	}
-	if err := r.patcher().clear(ctx, fd); err != nil {
-		return err
+	live := flink.Live(fd)
+	ours := phase == string(state.Suspended) && live.SpecJobState == "suspended" && !r.DryRun
+	switch {
+	case ours && live.LifecycleState != "SUSPENDED":
+		// A savepoint may be in flight; a resume now would race it. The predicate no longer
+		// lets this object's events through, so come back on our own.
+		return ctrl.Result{RequeueAfter: r.requeue()}, nil
+	case ours:
+		if err := r.patcher().resume(ctx, fd, state.State{}, "policy removed; resuming the job siesta suspended"); err != nil {
+			return ctrl.Result{}, err
+		}
+	default:
+		if err := r.patcher().clear(ctx, fd); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 	if err := r.Store.Delete(ctx, fd); err != nil {
-		return err
+		return ctrl.Result{}, err
 	}
 	r.forget(req)
 	r.event(fd, corev1.EventTypeNormal, "Released", "Release", "policy removed; state and memory cleared")
-	return nil
+	return ctrl.Result{}, nil
 }
 
 func (r *Reconciler) patcher() patcher {
@@ -256,12 +276,16 @@ func (r *Reconciler) refuseInvalidPolicy(ctx context.Context, fd *unstructured.U
 func (r *Reconciler) observe(ctx context.Context, req ctrl.Request, fd *unstructured.Unstructured, pol *policy.Policy, prev *state.State, live decide.Live) decide.Observation {
 	log := ctrl.LoggerFrom(ctx)
 	obs := decide.Observation{}
-	pctx, cancel := context.WithTimeout(ctx, r.probeTimeout())
-	defer cancel()
+	// The Kafka reads and each REST call get their own probe timeout, started when they start: a
+	// JobManager that swallows connections is the job gate's unknown, and must not leave the
+	// offsets no time to be read.
+	bounded := func() (context.Context, context.CancelFunc) { return context.WithTimeout(ctx, r.probeTimeout()) }
+	rctx, rcancel := bounded()
+	defer rcancel()
 
 	// The running job is asked, once per job instance, what it reads: to verify the annotation,
 	// or with sources: auto to learn the list. Both are events, never decisions.
-	job, jobKnown, settled := r.jobSources(pctx, req, live)
+	job, jobKnown, settled := r.jobSources(rctx, req, live)
 	if settled && prev.Reported.SourcesChecked != live.JobID {
 		if pol.SourcesAuto {
 			r.learnSources(fd, prev, job)
@@ -278,11 +302,13 @@ func (r *Reconciler) observe(ctx context.Context, req ctrl.Request, fd *unstruct
 		}
 	}
 
-	offsets, err := timed("offsets", func() (probe.Offsets, error) { return r.Probe.Observe(pctx, pol.Sources) })
+	kctx, kcancel := bounded()
+	defer kcancel()
+	offsets, err := timed("offsets", func() (probe.Offsets, error) { return r.Probe.Observe(kctx, pol.Sources) })
 	obs.Snapshot, obs.Ends = offsets.Snapshot, offsets.Ends
 	obs.Known = known(log, "offsets", err)
 	if pol.ConsumerGroup != "" && r.Lag != nil {
-		obs.Pending, err = timed("lag", func() (int64, error) { return r.Lag.Lag(pctx, pol.ConsumerGroup, pol.Sources) })
+		obs.Pending, err = timed("lag", func() (int64, error) { return r.Lag.Lag(kctx, pol.ConsumerGroup, pol.Sources) })
 		obs.LagKnown = known(log, "lag", err)
 		if errors.Is(err, probe.ErrNoCommit) {
 			obs.Uncommitted = err.Error()
@@ -292,7 +318,9 @@ func (r *Reconciler) observe(ctx context.Context, req ctrl.Request, fd *unstruct
 	if pol.IdleFromJob && obs.Known {
 		obs.ReadingNote = "job not running or its REST API not reachable"
 		if jobKnown {
-			reading, err := timed("flink-rest", func() (flink.Reading, error) { return r.Flink.Read(pctx, req.Namespace, req.Name, live.JobID, job) })
+			rctx, rcancel := bounded()
+			defer rcancel()
+			reading, err := timed("flink-rest", func() (flink.Reading, error) { return r.Flink.Read(rctx, req.Namespace, req.Name, live.JobID, job) })
 			if obs.ReadingKnown = known(log, "flink-rest", err); obs.ReadingKnown {
 				obs.Reading = reading
 			} else {

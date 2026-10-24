@@ -100,11 +100,11 @@ func TestDecide(t *testing.T) {
 		{"a partition disappearing counts as activity", auto, withSnap(suspendedState(), map[string]string{"t-0": "1", "t-1": "1"}), suspended, seen(map[string]string{"t-0": "1"}), t0.Add(24 * time.Hour), Resume},
 		{"restart off: a failed job is left alone", withRestart(auto, false), state.Initial(t0), Live{SpecJobState: "running", UpgradeMode: "savepoint", JobState: "FAILED", LifecycleState: "FAILED"}, seen(snap("1")), t0, None},
 		{"RESTARTING under failing-after is not failing", auto, state.Initial(t0), Live{SpecJobState: "running", UpgradeMode: "savepoint", JobState: "RESTARTING", LifecycleState: "STABLE"}, seen(snap("1")), t0.Add(9 * time.Minute), None},
-		{"RESTARTING over failing-after is failing", auto, state.Initial(t0), Live{SpecJobState: "running", UpgradeMode: "savepoint", JobState: "RESTARTING", LifecycleState: "STABLE"}, seen(snap("1")), t0.Add(11 * time.Minute), Restart},
+		{"RESTARTING over failing-after is failing", auto, restartingSince(state.Initial(t0), t0), Live{SpecJobState: "running", UpgradeMode: "savepoint", JobState: "RESTARTING", LifecycleState: "STABLE"}, seen(snap("1")), t0.Add(11 * time.Minute), Restart},
 		{"resumed outside siesta: we notice and let go", auto, suspendedState(), Live{SpecJobState: "running", UpgradeMode: "savepoint", JobState: "RUNNING", LifecycleState: "STABLE"}, seen(snap("100")), t0.Add(time.Hour), None},
 		{"suspended outside siesta: not ours to resume", auto, withSnap(state.Initial(t0), snap("1")), Live{SpecJobState: "suspended", UpgradeMode: "savepoint", JobState: "FINISHED", LifecycleState: "SUSPENDED"}, seen(snap("2")), t0.Add(time.Hour), None},
 		{"operator health-check on: our restart steps back", auto, state.Initial(t0), Live{SpecJobState: "running", UpgradeMode: "savepoint", JobState: "FAILED", LifecycleState: "FAILED", OperatorRestarts: true}, seen(snap("1")), t0.Add(time.Minute), None},
-		{"only suspends a RUNNING job", auto, withSnap(state.Initial(t0), snap("1")), Live{SpecJobState: "running", JobState: "RESTARTING", LifecycleState: "STABLE"}, seen(snap("1")), t0.Add(15 * 24 * time.Hour), Restart},
+		{"only suspends a RUNNING job", auto, withSnap(state.Initial(t0), snap("1")), Live{SpecJobState: "running", JobState: "RESTARTING", LifecycleState: "STABLE"}, seen(snap("1")), t0.Add(15 * 24 * time.Hour), None},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -160,6 +160,11 @@ func TestBackoffIsAWaitNotExhaustion(t *testing.T) {
 	if again.Action != None || again.Next.Phase != state.Active {
 		t.Fatalf("inside the backoff we must wait, not give up: got %s (%s)", again.Action, again.Reason)
 	}
+}
+
+func restartingSince(s state.State, at time.Time) state.State {
+	s.RestartingSince = at
+	return s
 }
 
 func withSnap(s state.State, m map[string]string) state.State {
@@ -308,5 +313,49 @@ func TestHeldNamesTheBlockingGate(t *testing.T) {
 				t.Fatalf("Held = %q, action %s, reason %q", got.Held, got.Action, got.Reason)
 			}
 		})
+	}
+}
+
+// RESTARTING counts as failing once it has lasted failing-after, timed from the first tick that
+// saw it. Flink's own restart strategy passes through RESTARTING for seconds; a job awake for a
+// day that one poll catches there must not be restarted on the spot.
+func TestRestartingIsTimedFromWhenItBegan(t *testing.T) {
+	d := New(rp)
+	restarting := Live{SpecJobState: "running", UpgradeMode: "savepoint", JobState: "RESTARTING", LifecycleState: "STABLE"}
+	s, day := withSnap(state.Initial(t0), snap("1")), t0.Add(24*time.Hour)
+	tick := func(live Live, at time.Time) Decision {
+		t.Helper()
+		got := d.Decide(auto, s, live, seen(snap("1")), at)
+		s = got.Next
+		return got
+	}
+	if got := tick(restarting, day); got.Action != None {
+		t.Fatalf("first RESTARTING tick after a day awake: want none, got %s (%s)", got.Action, got.Reason)
+	}
+	if got := tick(restarting, day.Add(9*time.Minute)); got.Action != None {
+		t.Fatalf("RESTARTING for 9m: want none, got %s (%s)", got.Action, got.Reason)
+	}
+	// The job recovered in between: the next RESTARTING starts a new clock.
+	tick(running, day.Add(10*time.Minute))
+	if got := tick(restarting, day.Add(12*time.Minute)); got.Action != None {
+		t.Fatalf("RESTARTING again after RUNNING: want none, got %s (%s)", got.Action, got.Reason)
+	}
+	if got := tick(restarting, day.Add(23*time.Minute)); got.Action != Restart {
+		t.Fatalf("RESTARTING for 11m: want restart, got %s (%s)", got.Action, got.Reason)
+	}
+}
+
+// A spec edit clears the budget but keeps the nonce of our last restart: the object still carries
+// it, and it is not a restart memory missed.
+func TestSpecEditGivesAFullBudget(t *testing.T) {
+	d := New(rp)
+	nonce := t0.UnixMilli()
+	stuck := state.State{Phase: state.Unrecoverable, Snapshot: snap("1"), Reason: "restart budget exhausted", Generation: 3,
+		LastActivityAt: t0, AwakeSince: t0, Restarts: state.RestartBudget{Count: 3, WindowStart: t0, LastNonce: nonce}}
+	live := withGen(running, 4)
+	live.RestartNonce = nonce
+	got := d.Decide(auto, stuck, live, seen(snap("1")), t0.Add(time.Hour))
+	if got.Next.Phase != state.Active || got.Next.Restarts.Count != 0 {
+		t.Fatalf("a new generation must leave a full budget, got phase %s count %d", got.Next.Phase, got.Next.Restarts.Count)
 	}
 }

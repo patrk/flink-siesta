@@ -32,13 +32,13 @@ func TestDataRoundTripsEveryField(t *testing.T) {
 	in := State{Phase: Suspended, Snapshot: map[string]string{"t-0": "1"}, LastActivityAt: t0, SuspendedAt: t0.Add(time.Hour),
 		AwakeSince: t0, Restarts: RestartBudget{Count: 2, WindowStart: t0, NextAfter: t0.Add(time.Minute), LastNonce: 77}, Reason: "r",
 		Generation: 7, ResumedAt: t0.Add(2 * time.Hour), Pending: 42, Outage: Outage{Down: true, Since: t0.Add(3 * time.Hour)},
-		Reported: Reported{SuspendChecked: true, ResumeStalled: true, SuspendStalled: true, SourcesChecked: "job1"}, Sources: []string{"a", "b.c"}, RefreshWake: true}
+		Reported: Reported{SuspendChecked: true, ResumeStalled: true, SuspendStalled: true, SourcesChecked: "job1"}, Sources: []string{"a", "b.c"}, RefreshWake: true, RestartingSince: t0.Add(4 * time.Hour)}
 	out, ok := FromData(in.Data())
 	if !ok {
 		t.Fatal("round trip must succeed")
 	}
 	if out.Phase != in.Phase || out.Snapshot["t-0"] != "1" || !out.SuspendedAt.Equal(in.SuspendedAt) || out.Restarts != in.Restarts ||
-		out.Generation != 7 || out.Pending != 42 || out.Outage != in.Outage || out.Reported != in.Reported || strings.Join(out.Sources, ",") != "a,b.c" || !out.ResumedAt.Equal(in.ResumedAt) || !out.RefreshWake {
+		out.Generation != 7 || out.Pending != 42 || out.Outage != in.Outage || out.Reported != in.Reported || strings.Join(out.Sources, ",") != "a,b.c" || !out.ResumedAt.Equal(in.ResumedAt) || !out.RefreshWake || !out.RestartingSince.Equal(in.RestartingSince) {
 		t.Fatalf("round trip lost a field: %+v", out)
 	}
 }

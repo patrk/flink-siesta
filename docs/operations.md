@@ -23,7 +23,7 @@ Every transition and every situation worth a human's attention is an Event on th
 | `SuspendStalled`, `ResumeStalled` | the operator has not completed a suspend, or a resumed job is not RUNNING, after `--resume-stall-after`, ten minutes by default. Said once. The usual causes are a full cluster, a missing image or a savepoint that no longer restores |
 | `SourcesVerified`, `SourcesDrift`, `SourcesUnverified` | once per job instance, the written `sources` compared with what the job's Kafka sources read. Never corrected |
 | `SourcesLearned` | with `sources: auto`, the topics learned from the job and remembered |
-| `Released` | the `mode` annotation was removed. The controller's annotations and ConfigMap are gone |
+| `Released` | the `mode` annotation was removed. The controller's annotations and ConfigMap are gone, and a job it had suspended was resumed, with a `Resumed` event before this one |
 | `SuspendedFailed`, `ResumedFailed`, `RestartedFailed` | a patch on the FlinkDeployment was rejected. The message is the API server's error, and the tick is retried |
 | `SaveFailed` | the controller could not write its memory. The next tick repairs it from the object |
 

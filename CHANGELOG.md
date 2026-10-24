@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Fix: a job seen RESTARTING was restarted on the spot once it had been awake longer than `--failing-after`, because the time was counted from its last resume or restart. Flink's own restart strategy passes through RESTARTING for seconds, so one poll catching it cost a redeploy and a slot of the budget. RESTARTING now counts as failing once it has lasted `--failing-after`.
+- Fix: clearing an unrecoverable deployment with a spec edit counted siesta's own last restart again, so the retry started with one slot of the budget used.
+- Fix: the Kafka reads and the job's REST calls shared one `--probe-timeout`. A JobManager whose REST port swallowed connections used it up, and every job reported `SourceUnreachable` and stayed awake. Each now has its own.
+- Fix: removing the `mode` annotation from a job siesta had suspended left it suspended for good, with nothing left on it to say why. It is now resumed first, once the operator has finished suspending it, then released.
+- Fix: negative durations were accepted, and a `d` value too large to count wrapped around to a negative one. A negative `idle-after` called every job idle. They now raise `InvalidPolicy`, and so does `idle-after: 0`.
+- Fix: `SiestaJobUnrecoverable` alerted on the transition counter, which Prometheus sees no increase in when its series starts at 1, so the first job marked unrecoverable never fired it, and it cleared after an hour. It now alerts on `siesta_deployment_state{state="unrecoverable"}`.
+- `docs/install.md` no longer says every `stateless` job is refused, and the chart in the repository carries the released version instead of 0.1.0, so `helm install` from a checkout runs a published image.
+
 ## 0.4.0, 2026-10-24
 
 - `resume-from: group-offsets` lets a `stateless` job sleep when its Kafka source resumes from the consumer group's committed offsets, ADR 15. It needs `consumer-group`, and the job sleeps only at lag zero.

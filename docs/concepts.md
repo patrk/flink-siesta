@@ -84,7 +84,7 @@ The prefix is configurable through `--annotation-prefix` and defaults to `siesta
 | `<prefix>/sources` | you | comma-separated topic names, or `auto` to learn them from the running job and remember them |
 | `<prefix>/consumer-group` | you | optional. When set, idle also means the group has consumed everything. |
 | `<prefix>/idle` | you | optional. `job` adds the running job's own view as the last gate, described above. Needs no consumer group. |
-| `<prefix>/idle-after` | you | a duration such as `336h` or `14d` |
+| `<prefix>/idle-after` | you | a positive duration such as `336h` or `14d` |
 | `<prefix>/min-awake` | you | a duration, default `1h` |
 | `<prefix>/resume-from` | you | optional. `group-offsets` lets a `stateless` job sleep whose Kafka source resumes from the consumer group's committed offsets. Needs `consumer-group`. |
 | `<prefix>/max-sleep` | you | a duration, default `6d`. With `resume-from: group-offsets`, the longest a job sleeps before it is woken to commit again. `0` switches it off. |
@@ -93,7 +93,7 @@ The prefix is configurable through `--annotation-prefix` and defaults to `siesta
 | `<prefix>/state` | controller | `active`, `suspended` or `unrecoverable` |
 | `<prefix>/reason` | controller | why it is in that state, or why it has not changed yet |
 
-A value the controller cannot read raises `InvalidPolicy` once and the job is left untouched until you fix it. Removing the `mode` annotation releases the job: the controller removes its two annotations and the ConfigMap, with a `Released` event.
+A value the controller cannot read raises `InvalidPolicy` once and the job is left untouched until you fix it. Removing the `mode` annotation releases the job: the controller removes its two annotations and the ConfigMap, with a `Released` event. A job it suspended is resumed first, as with `mode: off`, once the operator has finished suspending it.
 
 ## Sources: written or learned
 

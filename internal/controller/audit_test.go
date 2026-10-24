@@ -12,6 +12,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/patrk/flink-siesta/internal/flink"
@@ -452,5 +453,56 @@ func TestSourcesAutoWithoutTheRESTAPIIsInvalid(t *testing.T) {
 	}
 	if rec.count("InvalidPolicy") != 1 {
 		t.Fatalf("events = %v", rec.reasons)
+	}
+}
+
+// A job siesta put to sleep is handed back awake when the policy goes, as mode: off would hand it
+// back: once our annotations are gone nothing would ever wake it. Not while the operator is still
+// suspending it, which a resume would race.
+func TestRemovingThePolicyWakesAJobItSuspended(t *testing.T) {
+	c := startEnv(t)
+	ctx := context.Background()
+	fd := createDeployment(t, c, "asleep", "savepoint")
+	now := t0
+	r := newReconciler(c, &now, fixedOffsets(map[string]string{"in": "5"}))
+	rec := &fakeRecorder{}
+	r.Recorder = rec
+	key := types.NamespacedName{Name: "asleep", Namespace: "default"}
+	tick := func() ctrl.Result {
+		t.Helper()
+		res, err := r.Reconcile(ctx, reconcileRequest(key))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	tick()
+	now = now.Add(2 * time.Hour)
+	tick()
+	if s := specJobState(t, c, key); s != "suspended" {
+		t.Fatalf("setup: the idle job must sleep, events %v", rec.reasons)
+	}
+	if err := c.Get(ctx, key, fd); err != nil {
+		t.Fatal(err)
+	}
+	ann := fd.GetAnnotations()
+	delete(ann, "siesta.flink.io/mode")
+	fd.SetAnnotations(ann)
+	if err := c.Update(ctx, fd); err != nil {
+		t.Fatal(err)
+	}
+	if res := tick(); res.RequeueAfter == 0 || specJobState(t, c, key) != "suspended" || rec.count("Released") != 0 {
+		t.Fatalf("while the operator is still suspending, the release must wait: requeue %v, events %v", res.RequeueAfter, rec.reasons)
+	}
+	setStatus(t, c, fd, map[string]any{"lifecycleState": "SUSPENDED"})
+	tick()
+	if s := specJobState(t, c, key); s != "running" {
+		t.Fatalf("removing the policy must wake the job siesta suspended, spec %s, events %v", s, rec.reasons)
+	}
+	if err := c.Get(ctx, key, fd); err != nil {
+		t.Fatal(err)
+	}
+	if _, has := fd.GetAnnotations()["siesta.flink.io/state"]; has || rec.count("Released") != 1 {
+		t.Fatalf("the release must still clear our state, annotations %v, events %v", fd.GetAnnotations(), rec.reasons)
 	}
 }

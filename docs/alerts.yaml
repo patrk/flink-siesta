@@ -1,4 +1,4 @@
-# Three alerts worth having, as a PrometheusRule. Both fire on the controller's own metrics and
+# Three alerts worth having, as a PrometheusRule. All fire on the controller's own metrics and
 # nothing in the controller reads them (ADR 9).
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
@@ -22,7 +22,8 @@ spec:
             summary: "{{ $labels.namespace }}/{{ $labels.name }} has input but stays asleep"
             description: "A stateless job resuming from group offsets cannot resume: its consumer group has no committed offsets, so it would start from its reset strategy. Restore the offsets, or set spec.job.state: running to accept the replay."
         - alert: SiestaJobUnrecoverable
-          expr: increase(siesta_transitions_total{action="mark-unrecoverable"}[1h]) > 0
+          # The state, not the transition: it fires on the first mark and holds until a human clears it.
+          expr: siesta_deployment_state{state="unrecoverable"} == 1
           labels: { severity: critical }
           annotations:
             summary: "Siesta gave up on {{ $labels.namespace }}/{{ $labels.name }}"
