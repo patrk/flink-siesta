@@ -403,6 +403,8 @@ func TestSourcesAutoLearnsFromTheJobAndWakesFromMemory(t *testing.T) {
 
 	setJobID(t, r, fd, "j1")
 	tick()
+	now = now.Add(time.Minute) // the same topics, read sourceSettle apart, are the job's answer
+	tick()
 	if rec.count("SourcesLearned") != 1 {
 		t.Fatalf("events = %v", rec.reasons)
 	}

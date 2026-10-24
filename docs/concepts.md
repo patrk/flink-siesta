@@ -97,7 +97,7 @@ A value the controller cannot read raises `InvalidPolicy` once and the job is le
 
 ## Sources: written or learned
 
-The written list is the default. It is a contract a human can read, it needs no access to the job, and it lets a job read a topic it should not be woken by. While a job runs, its JobManager knows which topics its Kafka sources read, and once per job instance the controller compares that with the annotation and raises `SourcesVerified`, `SourcesDrift` or, for a job without Kafka source metrics, `SourcesUnverified`. It never edits the annotation.
+The written list is the default. It is a contract a human can read, it needs no access to the job, and it lets a job read a topic it should not be woken by. While a job runs, its JobManager knows which topics its Kafka sources read, and once per job instance the controller compares that with the annotation and raises `SourcesVerified`, `SourcesDrift` or, for a job without Kafka source metrics, `SourcesUnverified`. The topics count once two reads at least 30 seconds apart agree: a job restored from a savepoint shows its old topics at once and a newly added one only after the enumerator discovers it. It never edits the annotation.
 
 With `sources: auto` the controller reads the running job's Kafka topics once per job instance, remembers them in the ConfigMap, with a `SourcesLearned` event whenever the list is new or changed, and watches those. Until the job has run once under the controller nothing is known and nothing happens, and the reason says so. A job whose topics change while it sleeps wakes on the old list, and the new list is learned on that run.
 
