@@ -1,6 +1,14 @@
 {{- if and .Values.admissionPolicy.enabled (.Capabilities.APIVersions.Has "admissionregistration.k8s.io/v1/ValidatingAdmissionPolicy") }}
+{{- $sa := printf "system:serviceaccount:%s:%s" .Release.Namespace (include "siesta.fullname" .) }}
+{{- $prefix := printf "%s/" .Values.config.annotationPrefix }}
+{{- /* Every field of the FlinkDeployment spec and of spec.job on operator 1.13 to 1.16, but the
+two the controller writes. CEL cannot iterate a typed object's fields, so they are named; a
+field missing from the CRD would fail the policy closed, so only fields all four carry are. */}}
+{{- $spec := list "flinkConfiguration" "flinkVersion" "image" "imagePullPolicy" "ingress" "jobManager" "logConfiguration" "mode" "podTemplate" "serviceAccount" "taskManager" }}
+{{- $job := list "allowNonRestoredState" "args" "autoscalerResetNonce" "checkpointTriggerNonce" "entryClass" "initialSavepointPath" "jarURI" "parallelism" "savepointRedeployNonce" "savepointTriggerNonce" "upgradeMode" }}
 # Pins what the controller's ServiceAccount may change on a FlinkDeployment. RBAC cannot
-# limit a patch to fields; this can. Everything else in spec must be unchanged by its writes.
+# limit a patch to fields; this can. Its writes may change spec.job.state, spec.restartNonce and
+# annotations under its own prefix, and nothing else.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -15,23 +23,31 @@ spec:
         resources: ["flinkdeployments"]
   matchConditions:
     - name: from-siesta
-      expression: 'request.userInfo.username == "system:serviceaccount:{{ .Release.Namespace }}:{{ include "siesta.fullname" . }}"'
+      expression: 'request.userInfo.username == "{{ $sa }}"'
+  variables:
+    - name: annotations
+      expression: 'has(object.metadata.annotations) ? object.metadata.annotations : {}'
+    - name: oldAnnotations
+      expression: 'has(oldObject.metadata.annotations) ? oldObject.metadata.annotations : {}'
   validations:
     - expression: >-
-        object.spec.image == oldObject.spec.image &&
-        object.spec.flinkVersion == oldObject.spec.flinkVersion &&
-        object.spec.serviceAccount == oldObject.spec.serviceAccount &&
-        object.spec.flinkConfiguration == oldObject.spec.flinkConfiguration &&
-        object.spec.job.jarURI == oldObject.spec.job.jarURI &&
-        (has(object.spec.job.entryClass) ? object.spec.job.entryClass : "") == (has(oldObject.spec.job.entryClass) ? oldObject.spec.job.entryClass : "") &&
-        (has(object.spec.job.args) ? object.spec.job.args : []) == (has(oldObject.spec.job.args) ? oldObject.spec.job.args : []) &&
-        object.spec.job.parallelism == oldObject.spec.job.parallelism &&
-        object.spec.job.upgradeMode == oldObject.spec.job.upgradeMode &&
-        (has(object.spec.job.initialSavepointPath) ? object.spec.job.initialSavepointPath : "") == (has(oldObject.spec.job.initialSavepointPath) ? oldObject.spec.job.initialSavepointPath : "") &&
-        (has(object.spec.podTemplate) ? object.spec.podTemplate : {}) == (has(oldObject.spec.podTemplate) ? oldObject.spec.podTemplate : {}) &&
-        (has(object.spec.jobManager) ? object.spec.jobManager : {}) == (has(oldObject.spec.jobManager) ? oldObject.spec.jobManager : {}) &&
-        (has(object.spec.taskManager) ? object.spec.taskManager : {}) == (has(oldObject.spec.taskManager) ? oldObject.spec.taskManager : {})
-      message: "siesta may only change spec.job.state, spec.restartNonce and its own annotations"
+        {{- range $spec }}
+        has(object.spec.{{ . }}) == has(oldObject.spec.{{ . }}) && (!has(object.spec.{{ . }}) || object.spec.{{ . }} == oldObject.spec.{{ . }}) &&
+        {{- end }}
+        has(object.spec.job) == has(oldObject.spec.job) && (!has(object.spec.job) || (
+        {{- range $i, $f := $job }}{{ if $i }} &&{{ end }}
+          has(object.spec.job.{{ $f }}) == has(oldObject.spec.job.{{ $f }}) && (!has(object.spec.job.{{ $f }}) || object.spec.job.{{ $f }} == oldObject.spec.job.{{ $f }})
+        {{- end }}))
+      message: "siesta may only change spec.job.state and spec.restartNonce in the spec"
+    - expression: >-
+        variables.annotations.all(k, k.startsWith("{{ $prefix }}") || (k in variables.oldAnnotations && variables.oldAnnotations[k] == variables.annotations[k])) &&
+        variables.oldAnnotations.all(k, k.startsWith("{{ $prefix }}") || k in variables.annotations)
+      message: "siesta may only change annotations under {{ $prefix }}"
+    - expression: >-
+        (has(object.metadata.labels) ? object.metadata.labels : {}) == (has(oldObject.metadata.labels) ? oldObject.metadata.labels : {}) &&
+        (has(object.metadata.finalizers) ? object.metadata.finalizers : []) == (has(oldObject.metadata.finalizers) ? oldObject.metadata.finalizers : []) &&
+        (has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []) == (has(oldObject.metadata.ownerReferences) ? oldObject.metadata.ownerReferences : [])
+      message: "siesta may not change labels, finalizers or owner references"
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
@@ -39,6 +55,46 @@ metadata:
   name: {{ include "siesta.fullname" . }}-{{ .Release.Namespace }}-writes
 spec:
   policyName: {{ include "siesta.fullname" . }}-{{ .Release.Namespace }}-writes
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchExpressions:
+        - { key: kubernetes.io/metadata.name, operator: In, values: [{{ .Release.Namespace }}] }
+---
+# RBAC cannot name ConfigMaps by prefix, and the controller's own are created as deployments
+# appear. This keeps its writes to them: named siesta-<deployment> and labelled as its own,
+# before and after the write, so the Flink HA ConfigMaps next to them are out of its reach.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ include "siesta.fullname" . }}-{{ .Release.Namespace }}-configmaps
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["configmaps"]
+  matchConditions:
+    - name: from-siesta
+      expression: 'request.userInfo.username == "{{ $sa }}"'
+  variables:
+    - name: ours
+      expression: >-
+        [object, oldObject].all(o, o == null || (o.metadata.name.startsWith("siesta-") &&
+          has(o.metadata.labels) && "app.kubernetes.io/managed-by" in o.metadata.labels &&
+          o.metadata.labels["app.kubernetes.io/managed-by"] == "flink-siesta"))
+  validations:
+    - expression: variables.ours
+      message: "siesta may only write its own ConfigMaps, named siesta-<deployment> and labelled app.kubernetes.io/managed-by: flink-siesta"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ include "siesta.fullname" . }}-{{ .Release.Namespace }}-configmaps
+spec:
+  policyName: {{ include "siesta.fullname" . }}-{{ .Release.Namespace }}-configmaps
   validationActions: [Deny]
   matchResources:
     namespaceSelector:
