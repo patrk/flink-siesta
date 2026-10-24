@@ -2,8 +2,10 @@ apiVersion: v2
 name: flink-siesta
 description: Suspend idle Flink jobs and resume them on the first new record
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+# Kept at the latest release, so a chart installed from a checkout runs that image. A release
+# packages it with the tag's version either way.
+version: 0.4.0
+appVersion: "v0.4.0"
 icon: https://raw.githubusercontent.com/patrk/flink-siesta/main/docs/logo.png
 home: https://github.com/patrk/flink-siesta
 sources: [https://github.com/patrk/flink-siesta]

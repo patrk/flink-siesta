@@ -31,8 +31,10 @@ type State struct {
 	// RefreshWake: awake only so the group commits again before its offsets expire (ADR 15).
 	// Such a job may sleep again after min-awake without a fresh idle window. Input clears it.
 	RefreshWake bool
-	Outage      Outage   // the source could not be asked last tick, and since when
-	Reported    Reported // what has already been said about the current situation
+	// RestartingSince: when the job was first seen RESTARTING, zero while it is not.
+	RestartingSince time.Time
+	Outage          Outage   // the source could not be asked last tick, and since when
+	Reported        Reported // what has already been said about the current situation
 }
 
 // Outage is the source's reachability as of the last tick. It drives one event per edge.
@@ -86,6 +88,7 @@ func (s State) Data() map[string]string {
 		"sources-checked":   s.Reported.SourcesChecked,
 		"sources":           strings.Join(s.Sources, ","),
 		"refresh-wake":      strconv.FormatBool(s.RefreshWake),
+		"restarting-since":  formatTime(s.RestartingSince),
 	}
 }
 
@@ -113,7 +116,8 @@ func FromData(d map[string]string) (State, bool) {
 		key string
 		dst *time.Time
 	}{{"last-activity-at", &s.LastActivityAt}, {"suspended-at", &s.SuspendedAt}, {"awake-since", &s.AwakeSince},
-		{"resumed-at", &s.ResumedAt}, {"source-down-since", &s.Outage.Since}} {
+		{"resumed-at", &s.ResumedAt}, {"source-down-since", &s.Outage.Since},
+		{"restarting-since", &s.RestartingSince}} {
 		if *f.dst, ok = parseTime(d[f.key]); !ok {
 			return State{}, false
 		}

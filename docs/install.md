@@ -2,9 +2,9 @@
 
 ## Requirements
 
-- Flink Kubernetes Operator 1.13 to 1.16, tested on every release and weekly on every combination with Flink 1.20, 2.0 and 2.2, and 2.3 on operator 1.16. Older operators are not tested.
+- Flink Kubernetes Operator 1.13 to 1.16, tested on every combination before each release, and weekly with Flink 1.20, 2.0 and 2.2, and 2.3 on operator 1.16. Older operators are not tested.
 - Kubernetes 1.30 or later for the admission policy the chart installs by default. On an older cluster the chart skips it by itself. Nothing else needs a recent version.
-- A savepoint directory configured on the FlinkDeployment, `execution.checkpointing.savepoint-dir` on Flink 2.x or `state.savepoints.dir` on 1.x, and `upgradeMode: savepoint` or `last-state`. The controller never changes the upgrade mode. On `stateless` it refuses to suspend and says so in an Event, because a resume would replay the topic from the start.
+- A savepoint directory configured on the FlinkDeployment, `execution.checkpointing.savepoint-dir` on Flink 2.x or `state.savepoints.dir` on 1.x, and `upgradeMode: savepoint` or `last-state`. The controller never changes the upgrade mode. On `stateless` it refuses to suspend and says so in an Event, because a resume would replay the topic from the start, unless the job's Kafka source resumes from its consumer group's committed offsets and the deployment says so with `resume-from: group-offsets`, see [stateless jobs](concepts.md#stateless-jobs-that-resume-from-the-consumer-group).
 - A Kafka credential, see Connecting to Kafka below.
 - Network access from the controller to the Kafka brokers, the Kubernetes API server and, unless `config.flinkRest` is off, the JobManager pods on port 8081. The policy is below.
 - One controller instance per namespace and Kafka cluster. Two in one namespace would share ConfigMap names and the leader lease.
@@ -70,7 +70,7 @@ Every knob has a default that fits a typical namespace. Change them through `con
 | `idle-after` (annotation) | `14d` | no input for this long before a suspend |
 | `min-awake` (annotation) | `1h` | never suspend sooner than this after a resume or restart |
 | `--poll-interval` | `1m` | how often each deployment is visited |
-| `--probe-timeout` | `10s` | bound for the probes of one tick |
+| `--probe-timeout` | `10s` | bound for the probes of one tick: the Kafka reads and each call to the job's REST API get this long each |
 | `--restart-max`, `--restart-window`, `--restart-backoff` | `3`, `30m`, `1m` | restart budget for failing jobs, backoff doubles within the window |
 | `--failing-after` | `10m` | RESTARTING longer than this counts as failing |
 | `--resume-stall-after` | `10m` | warn once if a resume or a suspend has not completed after this |

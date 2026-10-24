@@ -219,3 +219,40 @@ func TestSourcesAreJudgedOnlyOnceTheGraphHoldsStill(t *testing.T) {
 		t.Fatalf("once settled, the graph is not read again: events = %v, reads = %d", rec.reasons, job.sources)
 	}
 }
+
+// hangingJob is a JobManager whose REST port swallows connections: every call waits out its context.
+type hangingJob struct{}
+
+func (hangingJob) Sources(ctx context.Context, _, _, _ string) (flink.Sources, error) {
+	<-ctx.Done()
+	return flink.Sources{}, ctx.Err()
+}
+
+func (hangingJob) Read(ctx context.Context, _, _, _ string, _ flink.Sources) (flink.Reading, error) {
+	<-ctx.Done()
+	return flink.Reading{}, ctx.Err()
+}
+
+// An unreachable REST API is the job gate's unknown. It must not use up the time the Kafka
+// reads have, or every job would also report its source unreachable and never sleep.
+func TestAHangingRESTAPILeavesKafkaItsTime(t *testing.T) {
+	c := startEnv(t)
+	ctx := context.Background()
+	fd := createDeployment(t, c, "hang", "savepoint")
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	r := newReconciler(c, &now, probe.Func(func(ctx context.Context, _ []string) (map[string]string, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return map[string]string{"in": "5"}, nil
+	}))
+	rec := &fakeRecorder{}
+	r.Flink, r.Recorder, r.ProbeTimeout = hangingJob{}, rec, 200*time.Millisecond
+	setJobID(t, r, fd, "j1")
+	if _, err := r.Reconcile(ctx, reconcileRequest(types.NamespacedName{Name: "hang", Namespace: "default"})); err != nil {
+		t.Fatal(err)
+	}
+	if rec.count("SourceUnreachable") != 0 {
+		t.Fatalf("a hanging REST API must not make Kafka unreachable, events %v", rec.reasons)
+	}
+}

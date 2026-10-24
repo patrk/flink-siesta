@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"math"
 	"strings"
 	"time"
 )
@@ -71,8 +72,8 @@ func Read(prefix string, ann map[string]string) (Policy, bool) {
 	default:
 		p.Problems = append(p.Problems, prefix+"/idle must be job or absent, got "+idle)
 	}
-	p.IdleAfter = p.duration(prefix+"/idle-after", ann, 14*24*time.Hour)
-	p.MinAwake = p.duration(prefix+"/min-awake", ann, time.Hour)
+	p.IdleAfter = p.duration(prefix+"/idle-after", ann, 14*24*time.Hour, false)
+	p.MinAwake = p.duration(prefix+"/min-awake", ann, time.Hour, true)
 	switch from := strings.TrimSpace(ann[prefix+"/resume-from"]); {
 	case from == "":
 	case strings.EqualFold(from, "group-offsets"):
@@ -84,7 +85,7 @@ func Read(prefix string, ann map[string]string) (Policy, bool) {
 		p.Problems = append(p.Problems, prefix+"/resume-from must be group-offsets or absent, got "+from)
 	}
 	// Six days stays inside Kafka's default offsets.retention.minutes of seven.
-	p.MaxSleep = p.duration(prefix+"/max-sleep", ann, 6*24*time.Hour)
+	p.MaxSleep = p.duration(prefix+"/max-sleep", ann, 6*24*time.Hour, true)
 	if strings.EqualFold(strings.TrimSpace(ann[prefix+"/sources"]), "auto") {
 		p.SourcesAuto = true
 	} else {
@@ -106,7 +107,9 @@ func Read(prefix string, ann map[string]string) (Policy, bool) {
 }
 
 // duration parses an annotation, recording a problem instead of silently using the default.
-func (p *Policy) duration(key string, ann map[string]string, dflt time.Duration) time.Duration {
+// Negative values are problems, and so is zero unless zeroOK: a negative idle-after would
+// call every job idle.
+func (p *Policy) duration(key string, ann map[string]string, dflt time.Duration, zeroOK bool) time.Duration {
 	raw, has := ann[key]
 	if !has || strings.TrimSpace(raw) == "" {
 		return dflt
@@ -114,6 +117,10 @@ func (p *Policy) duration(key string, ann map[string]string, dflt time.Duration)
 	d, ok := parseDuration(raw)
 	if !ok {
 		p.Problems = append(p.Problems, key+" is not a duration: "+raw)
+		return dflt
+	}
+	if d < 0 || (d == 0 && !zeroOK) {
+		p.Problems = append(p.Problems, key+" must be positive, got "+raw)
 		return dflt
 	}
 	return d
@@ -124,7 +131,10 @@ func parseDuration(s string) (time.Duration, bool) {
 	s = strings.TrimSpace(s)
 	if strings.HasSuffix(s, "d") {
 		d, err := time.ParseDuration(strings.TrimSuffix(s, "d") + "h")
-		return d * 24, err == nil
+		if err != nil || d > math.MaxInt64/24 || d < math.MinInt64/24 {
+			return 0, false // past what a Duration holds, about 292 years
+		}
+		return d * 24, true
 	}
 	d, err := time.ParseDuration(s)
 	return d, err == nil

@@ -174,7 +174,8 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, obs Obser
 	// restarts the clocks, so the deployment gets a full idle window like after a resume.
 	if prev.Phase == state.Unrecoverable && live.Generation > prev.Generation {
 		prev = wake(prev, now, "spec changed")
-		prev.Restarts = state.RestartBudget{}
+		// The object still carries our last restart's nonce; it is not a restart memory missed.
+		prev.Restarts = state.RestartBudget{LastNonce: prev.Restarts.LastNonce}
 	}
 	prev.Generation = live.Generation
 
@@ -268,6 +269,13 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, obs Obser
 			cur.Restarts.LastNonce = live.RestartNonce
 			cur.AwakeSince = now
 		}
+		// RESTARTING is timed from the first tick that saw it: Flink's own restart strategy
+		// passes through it for seconds, and only a long stay there is failing.
+		if live.JobState != "RESTARTING" {
+			cur.RestartingSince = time.Time{}
+		} else if cur.RestartingSince.IsZero() {
+			cur.RestartingSince = now
+		}
 		if r := d.unrecoverable(live); r != "" {
 			cur.Phase, cur.Reason = state.Unrecoverable, r
 			return Decision{Action: MarkUnrecoverable, Next: cur, Reason: r}
@@ -354,7 +362,12 @@ func (d *Decider) failing(live Live, s state.State, now time.Time) bool {
 	if live.JobState == "FAILED" || live.LifecycleState == "FAILED" {
 		return true
 	}
-	return live.JobState == "RESTARTING" && now.After(s.AwakeSince.Add(d.restart.FailingAfter))
+	// Counted from the later of the two: a job just resumed or restarted gets the full window too.
+	since := s.RestartingSince
+	if s.AwakeSince.After(since) {
+		since = s.AwakeSince
+	}
+	return live.JobState == "RESTARTING" && now.After(since.Add(d.restart.FailingAfter))
 }
 
 func (d *Decider) unrecoverable(live Live) string {

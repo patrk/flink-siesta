@@ -64,14 +64,14 @@ var (
 
 	WouldAct = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "siesta_dry_run_would_act",
-		Help: "1 for the action the controller would take now in dry-run (suspend, resume, restart, refuse), 0 otherwise.",
+		Help: "1 for the action the controller would take now in dry-run (suspend, resume, restart, mark-unrecoverable, refuse), 0 otherwise.",
 	}, []string{"namespace", "name", "action"})
 
 	// HeldAwake is 1 for the gate that keeps an idle job awake this tick, so
 	// sum by (gate) (siesta_held_awake) is "why are idle jobs not sleeping" for the namespace.
 	HeldAwake = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "siesta_held_awake",
-		Help: "1 for the gate holding an idle deployment awake (min-awake, lag-unknown, lag-pending, job-unknown, job-busy), 0 otherwise.",
+		Help: "1 for the gate holding an idle deployment awake (min-awake, lag-unknown, lag-pending, job-unknown, job-busy, offsets-missing), 0 otherwise.",
 	}, []string{"namespace", "name", "gate"})
 
 	ProbeDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
