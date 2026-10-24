@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.1, 2026-10-24
 
 - Fix: a job seen RESTARTING was restarted on the spot once it had been awake longer than `--failing-after`, because the time was counted from its last resume or restart. Flink's own restart strategy passes through RESTARTING for seconds, so one poll catching it cost a redeploy and a slot of the budget. RESTARTING now counts as failing once it has lasted `--failing-after`.
 - Fix: clearing an unrecoverable deployment with a spec edit counted siesta's own last restart again, so the retry started with one slot of the budget used.
