@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0, 2026-10-24
 
 - `resume-from: group-offsets` lets a `stateless` job sleep when its Kafka source resumes from the consumer group's committed offsets, ADR 15. It needs `consumer-group`, and the job sleeps only at lag zero.
 - `max-sleep`, six days by default, wakes such a job before the broker expires its group's offsets. It commits, and sleeps again after `min-awake` without a new idle window.
