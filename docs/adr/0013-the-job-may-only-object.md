@@ -55,3 +55,14 @@ without a consumer group, whose reader is stuck with a fetched backlog: the brok
 change and the job is suspended mid-backlog. The backlog waits for the next produced
 record. `idle: job` is the fix, and the README says so where it explains the annotation.
 The party present in both states decides; the party present in one state may only object.
+
+**Amendment, 0.5.** Offsets the broker counts are not all records a reader is given. A
+transactional producer leaves a commit or abort marker after each transaction, an aborted
+transaction's records are skipped by a `read_committed` reader, and compaction leaves offsets
+with no record. A reader at its last record is then short of the end offset, by one for a
+marker, and the gate said `job busy` for good. The job cannot tell the difference; the broker
+can. For a quiet job short of the end, the controller fetches the gap `read_committed` and
+counts it drained only if no batch in it is a record a consumer would be given, from the batch
+headers alone, and only if no transaction is open below the end offset. A drained gap is
+remembered, since a log only grows at its end. The broker's answer still only lets the job
+object less: an unanswered question leaves the gap pending.

@@ -2,6 +2,7 @@ package policy
 
 import (
 	"math"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -35,6 +36,9 @@ type Policy struct {
 	// MaxSleep bounds how long a job resuming from group offsets sleeps, so that the broker
 	// does not expire the group's offsets while nothing commits. Zero means unbounded.
 	MaxSleep time.Duration
+	// DryRun, from `dry-run: "true"`, records what the controller would do to this deployment
+	// without doing it, as --dry-run does for all of them.
+	DryRun bool
 	// Problems lists values that were missing or unparsable. A policy with problems is still
 	// "ours" (mode is set) but must not be acted on; the reconciler reports them once.
 	Problems []string
@@ -71,6 +75,13 @@ func Read(prefix string, ann map[string]string) (Policy, bool) {
 		p.IdleFromJob = true
 	default:
 		p.Problems = append(p.Problems, prefix+"/idle must be job or absent, got "+idle)
+	}
+	switch dry := strings.TrimSpace(ann[prefix+"/dry-run"]); {
+	case dry == "", strings.EqualFold(dry, "false"):
+	case strings.EqualFold(dry, "true"):
+		p.DryRun = true
+	default:
+		p.Problems = append(p.Problems, prefix+"/dry-run must be true or false, got "+dry)
 	}
 	p.IdleAfter = p.duration(prefix+"/idle-after", ann, 14*24*time.Hour, false)
 	p.MinAwake = p.duration(prefix+"/min-awake", ann, time.Hour, true)
@@ -126,16 +137,32 @@ func (p *Policy) duration(key string, ann map[string]string, dflt time.Duration,
 	return d
 }
 
-// parseDuration accepts Go durations ("30m", "2h") plus a "d" suffix, which time.ParseDuration lacks.
+// days is a leading day count, as in "2d" or "1d12h": time.ParseDuration has no "d".
+var days = regexp.MustCompile(`^(-?)(\d+(?:\.\d+)?)d(.*)$`)
+
+// parseDuration accepts Go durations ("30m", "2h") with an optional leading day count ("2d",
+// "1.5d", "1d12h"). A value past what a Duration holds, about 292 years, is not a duration.
 func parseDuration(s string) (time.Duration, bool) {
 	s = strings.TrimSpace(s)
-	if strings.HasSuffix(s, "d") {
-		d, err := time.ParseDuration(strings.TrimSuffix(s, "d") + "h")
-		if err != nil || d > math.MaxInt64/24 || d < math.MinInt64/24 {
-			return 0, false // past what a Duration holds, about 292 years
-		}
-		return d * 24, true
+	m := days.FindStringSubmatch(s)
+	if m == nil {
+		d, err := time.ParseDuration(s)
+		return d, err == nil
 	}
-	d, err := time.ParseDuration(s)
-	return d, err == nil
+	d, err := time.ParseDuration(m[2] + "h")
+	if err != nil || d > math.MaxInt64/24 {
+		return 0, false
+	}
+	d *= 24
+	if m[3] != "" {
+		rest, err := time.ParseDuration(m[3])
+		if err != nil || rest < 0 || rest > math.MaxInt64-d || strings.HasPrefix(m[3], "+") {
+			return 0, false
+		}
+		d += rest
+	}
+	if m[1] == "-" {
+		d = -d
+	}
+	return d, true
 }

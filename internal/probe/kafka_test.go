@@ -117,3 +117,116 @@ func TestKafkaEndOffsets(t *testing.T) {
 		t.Fatalf("deleted offsets must read as no commit, got %v", err)
 	}
 }
+
+// Transactions leave offsets no consumer is given: a marker after every commit or abort, and
+// the records of an aborted transaction. Records tells those gaps from records pending.
+func TestKafkaRecordsSeesThroughTransactionMarkers(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	if _, err := testcontainers.NewDockerProvider(); err != nil {
+		t.Skipf("docker not available: %v", err)
+	}
+	c, err := kafka.Run(ctx, "confluentinc/confluent-local:8.3.1", kafka.WithClusterID("siesta-txn"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := c.Terminate(context.Background()); err != nil {
+			t.Logf("terminate container: %v", err)
+		}
+	})
+	brokers, err := c.Brokers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin, err := kgo.NewClient(kgo.SeedBrokers(brokers...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	if _, err := kadm.NewClient(admin).CreateTopic(ctx, 1, 1, nil, "txn"); err != nil {
+		t.Fatal(err)
+	}
+	producer, err := kgo.NewClient(kgo.SeedBrokers(brokers...), kgo.TransactionalID("siesta-test"), kgo.DefaultProduceTopic("txn"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer producer.Close()
+	transaction := func(n int, commit kgo.TransactionEndTry) {
+		t.Helper()
+		if err := producer.BeginTransaction(); err != nil {
+			t.Fatal(err)
+		}
+		for range n {
+			if err := producer.ProduceSync(ctx, &kgo.Record{Value: []byte("v")}).FirstErr(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := producer.EndTransaction(ctx, commit); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p, err := NewKafka(kgo.SeedBrokers(brokers...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	end := func() int64 {
+		t.Helper()
+		o, err := p.Observe(ctx, []string{"txn"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return o.Ends["txn"][0]
+	}
+	// The coordinator writes the markers after EndTransaction returns.
+	endAt := func(want int64) {
+		t.Helper()
+		for deadline := time.Now().Add(30 * time.Second); end() != want; time.Sleep(200 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("end offset never reached %d, at %d", want, end())
+			}
+		}
+	}
+	records := func(from, to int64) bool {
+		t.Helper()
+		got, err := p.Records(ctx, "txn", 0, from, to)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	transaction(3, kgo.TryCommit) // records 0..2, commit marker at 3
+	endAt(4)
+	if records(3, 4) {
+		t.Fatal("past the last record there is only the commit marker")
+	}
+	if !records(2, 4) {
+		t.Fatal("record 2 is a record")
+	}
+	transaction(2, kgo.TryAbort) // aborted records 4..5, abort marker at 6
+	endAt(7)
+	if records(3, 7) {
+		t.Fatal("an aborted transaction and its marker hold no record for a consumer")
+	}
+	transaction(1, kgo.TryCommit) // record 7, marker at 8
+	endAt(9)
+	if !records(3, 9) || records(8, 9) {
+		t.Fatal("a committed record after an aborted transaction is a record; its marker is not")
+	}
+
+	// An open transaction's records may still commit: they count.
+	if err := producer.BeginTransaction(); err != nil {
+		t.Fatal(err)
+	}
+	if err := producer.ProduceSync(ctx, &kgo.Record{Value: []byte("v")}).FirstErr(); err != nil {
+		t.Fatal(err)
+	}
+	if !records(8, end()) {
+		t.Fatal("an open transaction below the end must count as records")
+	}
+	if err := producer.EndTransaction(ctx, kgo.TryAbort); err != nil {
+		t.Fatal(err)
+	}
+}

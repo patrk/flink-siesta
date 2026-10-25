@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -254,5 +255,60 @@ func TestAHangingRESTAPILeavesKafkaItsTime(t *testing.T) {
 	}
 	if rec.count("SourceUnreachable") != 0 {
 		t.Fatalf("a hanging REST API must not make Kafka unreachable, events %v", rec.reasons)
+	}
+}
+
+// gapFunc adapts a function to probe.GapProbe and records what was asked.
+type gapFunc func(topic string, partition int32, from, to int64) (bool, error)
+
+func (f gapFunc) Records(_ context.Context, topic string, partition int32, from, to int64) (bool, error) {
+	return f(topic, partition, from, to)
+}
+
+// A transactional producer leaves a commit marker after its last record: the job has emitted
+// offset 9 of a partition that ends at 11. The broker is asked what lies in between, and only
+// a gap it confirms holds nothing for a consumer lets the job sleep.
+func TestTheJobGateAsksTheBrokerAboutAGapAfterTheLastRecord(t *testing.T) {
+	c := startEnv(t)
+	ctx := context.Background()
+	fd := createDeployment(t, c, "txn", "savepoint")
+	ann := fd.GetAnnotations()
+	ann["siesta.flink.io/idle"] = "job"
+	fd.SetAnnotations(ann)
+	if err := c.Update(ctx, fd); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	r := newReconciler(c, &now, fixedOffsets(map[string]string{"in": "11"}))
+	job := &fakeJob{topics: []string{"in"}, reading: flink.Reading{Offsets: map[string]map[int]int64{"in": {0: 9}}, IdleFor: time.Hour}}
+	r.Flink = job
+	var asked []string
+	records := true
+	r.Gaps = gapFunc(func(topic string, partition int32, from, to int64) (bool, error) {
+		asked = append(asked, fmt.Sprintf("%s/%d [%d,%d)", topic, partition, from, to))
+		return records, nil
+	})
+	setJobID(t, r, fd, "j1")
+	key := types.NamespacedName{Name: "txn", Namespace: "default"}
+	reconcile := func() {
+		t.Helper()
+		if _, err := r.Reconcile(ctx, reconcileRequest(key)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reconcile()
+	now = now.Add(2 * time.Hour)
+	reconcile()
+	if s := specJobState(t, c, key); s != "running" {
+		t.Fatal("a record the broker says is there must hold the suspend")
+	}
+	if len(asked) == 0 || asked[len(asked)-1] != "in/0 [10,11)" {
+		t.Fatalf("the broker must be asked about the offsets after the last emitted record, asked %v", asked)
+	}
+	records = false
+	now = now.Add(time.Minute)
+	reconcile()
+	if s := specJobState(t, c, key); s != "suspended" {
+		t.Fatal("a gap of markers only must let the job sleep")
 	}
 }

@@ -33,7 +33,7 @@ Annotate one deployment. Nothing else changes about it.
         siesta.flink.io/sources: orders
         siesta.flink.io/idle-after: 2h
 
-Two hours after the last record on `orders`, `kubectl describe flinkdeployment` shows `Suspended  no input for 2h0m0s` and the pods are gone. Produce one record, and within a minute or two it shows `Resumed  input observed` and the job continues from its savepoint. To watch without letting the controller act, install with `--set config.dryRun=true` first: the reason annotation then says what it would have done.
+Two hours after the last record on `orders`, `kubectl describe flinkdeployment` shows `Suspended  no input for 2h0m0s` and the pods are gone. Produce one record, and within a minute or two it shows `Resumed  input observed` and the job continues from its savepoint. To watch without letting the controller act, install with `--set config.dryRun=true` first, or annotate one job with `siesta.flink.io/dry-run: "true"`: the reason annotation then says what it would have done.
 
 ## What it does, and does not
 

@@ -9,7 +9,9 @@ import (
 // offset from this tick against the last offset the reader emitted, per declared partition. A
 // reader still at its initial offset is caught up only if it also reports idle, which is a
 // reader that had nothing to read from where it started. Quiet means no record emitted for at
-// least one poll interval, so a job still working through a fetched backlog objects.
+// least one poll interval, so a job still working through a fetched backlog objects. Offsets
+// the broker confirmed hold no record for a consumer, a transaction's commit marker being the
+// common one, are not pending.
 func jobGate(sources []string, ends map[string][]int64, reading JobReading, quiet time.Duration) (gate JobGate, note string) {
 	var pending int64
 	for _, topic := range sources {
@@ -29,6 +31,8 @@ func jobGate(sources []string, ends map[string][]int64, reading JobReading, quie
 				pending += end // nothing emitted yet and not idle: the reader is about to read
 			case emitted == InitialOffset:
 				// idle without ever emitting: nothing to read from where it started
+			case reading.Drained[topic][p]:
+				// the rest is markers or aborted records, which the reader is never given
 			default:
 				pending += max(0, end-(emitted+1))
 			}

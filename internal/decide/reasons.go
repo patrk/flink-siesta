@@ -19,6 +19,8 @@ const (
 	ReasonOperatorRestarts = "restart left to the operator's health check"
 	ReasonBudgetExhausted  = "restart budget exhausted"
 	ReasonRefreshed        = "group offsets committed again, no input since"
+	ReasonRelearn          = "learned sources lost while asleep; resumed so the job can say what it reads"
+	ReasonRelearnHeld      = "resume held: learned sources lost while asleep, and the group's offsets cannot be checked without them; set spec.job.state: running to wake the job"
 )
 
 func reasonOperatorBusy(lifecycle string) string   { return "operator busy: " + lifecycle }

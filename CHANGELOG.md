@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Fix: with transactional producers, `idle: job` never let a job sleep. Each transaction ends in a commit marker, which takes an offset no reader is given, so the gate always counted one record pending. For a quiet job short of the end offset, the controller now asks the broker whether anything a consumer is given lies in between: markers, aborted transactions and compacted-away offsets do not count, an open transaction does. Tested against a real broker and, in the `job-graph` e2e scenario, a transactional producer.
+- Fix: a metrics read for a source with more than about 50 partitions did not fit the 4096-byte request line Flink's REST server accepts, which answers 404, so `idle: job` held such a job with `job unknown` for good. The read is now split across requests.
+- Fix: the unrecoverable patterns were matched on every tick, also against an old `status.error` on a job that had recovered and was running, which marked it unrecoverable and kept it awake. They are now matched only with `restart` on and on a job that is not STABLE and RUNNING.
+- Fix: a tick that read the deployment from a stale cache right after siesta's own suspend could write `state: active` over the suspend, after which the job counted as suspended outside siesta and input no longer woke it. A write is no longer retried when `spec.job.state` changed since the read.
+- Fix: with `sources: auto`, a job whose ConfigMap was lost while it slept had nothing to watch and slept for good. It is now resumed so its topics can be learned again, or, resuming from group offsets, held with a reason, since its group's offsets cannot be checked without them. `sources-unknown` in `siesta_held_awake`.
+- Fix: `sources: auto` before anything was learned raised `SourceUnreachable`, though nothing had been asked.
+- The `dry-run` annotation records what the controller would do to one job without doing it, as `config.dryRun` does for all.
+- Durations take days followed by a Go duration, such as `1d12h`.
 - `--max-concurrent-reconciles`, 4 by default, reconciles that many deployments at once. It was one, so a pass over a thousand deployments overran the poll interval, and during a Kafka outage each waited out `--probe-timeout` in turn. Chart value `config.maxConcurrentReconciles`.
 - `--kube-api-qps` and `--kube-api-burst`, 20 and 30, set the client's rate limit towards the Kubernetes API, so it can be raised with the workers. Chart values under `config.kubeAPI`.
 - The consumer-group lag is measured against the end offsets the tick already read, instead of asking the broker for them a second time.

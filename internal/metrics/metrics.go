@@ -29,7 +29,7 @@ var (
 
 	ProbeErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "siesta_probe_errors_total",
-		Help: "Times a source could not be asked, by what was asked (offsets, lag, flink-rest).",
+		Help: "Times a source could not be asked, by what was asked (offsets, lag, flink-rest, gap).",
 	}, []string{"kind"})
 
 	// The savings view. SuspendedSeconds accumulates wall time spent suspended; Released* hold
@@ -71,19 +71,19 @@ var (
 	// sum by (gate) (siesta_held_awake) is "why are idle jobs not sleeping" for the namespace.
 	HeldAwake = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "siesta_held_awake",
-		Help: "1 for the gate holding an idle deployment awake (min-awake, lag-unknown, lag-pending, job-unknown, job-busy, offsets-missing), 0 otherwise.",
+		Help: "1 for the gate holding an idle deployment awake (min-awake, lag-unknown, lag-pending, job-unknown, job-busy, offsets-missing, sources-unknown), 0 otherwise.",
 	}, []string{"namespace", "name", "gate"})
 
 	ProbeDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "siesta_probe_duration_seconds",
-		Help:    "Round trip of one probe call, by what was asked (offsets, lag, flink-rest).",
+		Help:    "Round trip of one probe call, by what was asked (offsets, lag, flink-rest, gap).",
 		Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
 	}, []string{"kind"})
 )
 
 var (
 	dryRunActions = []string{"suspend", "resume", "restart", "refuse", "mark-unrecoverable"}
-	gates         = []string{"min-awake", "lag-unknown", "lag-pending", "job-unknown", "job-busy", "offsets-missing"}
+	gates         = []string{"min-awake", "lag-unknown", "lag-pending", "job-unknown", "job-busy", "offsets-missing", "sources-unknown"}
 )
 
 var states = []string{"active", "suspended", "unrecoverable"}

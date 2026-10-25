@@ -66,6 +66,10 @@ print(sum(1 for e in items if e["reason"] in ("Suspended", "Resumed", "Restarted
 kafka() { k -n $ns exec deploy/kafka -- "$@"; }
 produce() { kafka sh -c "$1 | /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server localhost:9092 --topic ${2:-e2e-in}"; }
 topic() { kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 "$@"; }
+# produce_txn N: N records in one committed transaction, so a commit marker follows them.
+produce_txn() { kafka /opt/kafka/bin/kafka-producer-perf-test.sh --topic "${2:-e2e-in}" --num-records "$1" --record-size 16 \
+  --throughput -1 --transactional-id "siesta-e2e-$RANDOM" --transaction-duration-ms 60000 \
+  --producer-props bootstrap.servers=localhost:9092 >/dev/null; }
 
 # fresh_volumes: no HA metadata, checkpoints, savepoints or topics inherited from an earlier run.
 # The driver does this once; a scenario run on its own reuses what is there.

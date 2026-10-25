@@ -48,6 +48,7 @@ type Reconciler struct {
 	Probe    probe.ActivityProbe
 	Lag      probe.LagProbe // optional; nil when the source cannot measure consumer lag
 	Flink    JobProbe       // optional; nil when the JobManager REST API is not to be used
+	Gaps     probe.GapProbe // optional; tells transaction markers after a job's last record from records
 	memo     memo           // per-process memory that need not survive a restart
 	Decider  *decide.Decider
 	Recorder recorder.EventRecorder
@@ -139,7 +140,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	d := r.Decider.Decide(pol, prev, live, obs, now)
 	ctrl.LoggerFrom(ctx).Info("decided", gateTrace(pol, prev, live, obs, d, now)...)
 	d = r.report(fd, pol, prev, live, obs, d, now)
-	if r.DryRun {
+	if r.DryRun || pol.DryRun {
 		would := ""
 		if d.Action != decide.None {
 			would = d.Action.String()
@@ -303,7 +304,7 @@ func (r *Reconciler) observe(ctx context.Context, req ctrl.Request, fd *unstruct
 	if pol.SourcesAuto {
 		pol.Sources = prev.Sources
 		if len(pol.Sources) == 0 {
-			obs.Why = "sources: auto, waiting for the job to run once so its topics can be learned"
+			obs.Why, obs.Unlearned = "sources: auto, waiting for the job to run once so its topics can be learned", true
 			return obs
 		}
 	}
@@ -329,6 +330,9 @@ func (r *Reconciler) observe(ctx context.Context, req ctrl.Request, fd *unstruct
 			defer rcancel()
 			reading, err := timed("flink-rest", func() (flink.Reading, error) { return r.Flink.Read(rctx, req.Namespace, req.Name, live.JobID, job) })
 			if obs.ReadingKnown = known(log, "flink-rest", err); obs.ReadingKnown {
+				gctx, gcancel := bounded()
+				defer gcancel()
+				reading.Drained = r.drained(gctx, log, pol.Sources, obs.Ends, reading)
 				obs.Reading = reading
 			} else {
 				obs.ReadingNote = err.Error()
@@ -338,13 +342,55 @@ func (r *Reconciler) observe(ctx context.Context, req ctrl.Request, fd *unstruct
 	return obs
 }
 
+// drainedChecks bounds the broker questions one tick asks about a job's partitions.
+const drainedChecks = 16
+
+// drained asks the broker, for each partition a quiet job has read short of the end offset,
+// whether anything a consumer is given lies in between (ADR 13). A transactional producer
+// leaves a commit marker after its last record, so without this such a job never reads as
+// caught up. A busy job is not asked about: the gate holds it anyway. What could not be
+// asked stays pending.
+func (r *Reconciler) drained(ctx context.Context, log logr.Logger, sources []string, ends map[string][]int64, reading flink.Reading) map[string]map[int]bool {
+	quiet := r.Decider.Quiet
+	if quiet <= 0 {
+		quiet = time.Minute
+	}
+	if r.Gaps == nil || reading.IdleFor < quiet {
+		return nil
+	}
+	out := map[string]map[int]bool{}
+	asked := 0
+	for _, topic := range sources {
+		for p, end := range ends[topic] {
+			emitted, has := reading.Offsets[topic][p]
+			if !has || emitted < 0 || emitted+1 >= end {
+				continue
+			}
+			asked++
+			if asked > drainedChecks {
+				return out
+			}
+			records, err := timed("gap", func() (bool, error) { return r.Gaps.Records(ctx, topic, int32(p), emitted+1, end) })
+			if known(log, "gap", err) && !records {
+				if out[topic] == nil {
+					out[topic] = map[int]bool{}
+				}
+				out[topic][p] = true
+			}
+		}
+	}
+	return out
+}
+
 // report raises the events that describe an edge, never a tick, and records in the next state
 // that they were raised: reachability, a held resume, a suspend completed without a savepoint,
 // a stalled resume.
 func (r *Reconciler) report(fd *unstructured.Unstructured, pol policy.Policy, prev state.State, live decide.Live, obs decide.Observation, d decide.Decision, now time.Time) decide.Decision {
 	// Each outage is named by when it began: the events API folds identical events into a
 	// series that surfaces late, and two outages deserve two lines in kubectl describe.
+	// Nothing asked is no outage: sources: auto before anything is learned asks nobody.
 	switch {
+	case obs.Unlearned:
 	case !obs.Known && !prev.Outage.Down:
 		d.Next.Outage.Since = now
 		r.event(fd, corev1.EventTypeWarning, "SourceUnreachable", "Probe",
@@ -353,7 +399,7 @@ func (r *Reconciler) report(fd *unstructured.Unstructured, pol policy.Policy, pr
 		r.event(fd, corev1.EventTypeNormal, "SourceReachable", "Probe",
 			"offsets readable again after "+now.Sub(prev.Outage.Since).Round(time.Second).String()+"; down since "+prev.Outage.Since.UTC().Format(time.RFC3339))
 	}
-	d.Next.Outage.Down = !obs.Known
+	d.Next.Outage.Down = !obs.Known && !obs.Unlearned
 
 	// A job resuming from group offsets whose group has none left is held asleep (ADR 15). Said
 	// once, when the hold begins: the reason on the object carries it from then on.

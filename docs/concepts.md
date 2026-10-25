@@ -61,7 +61,7 @@ Unknown never acts. A probe that could not be asked, a lag that could not be mea
 
 With `consumer-group`, idle also means caught up: the group's committed offsets equal the end offsets. Flink commits those offsets when a checkpoint completes, or, with checkpointing off, on the Kafka client's auto-commit interval if `enable.auto.commit` is on. Without either the group never commits and the lag stays unknown.
 
-With `idle: job`, the controller compares each declared partition's end offset with the last offset the job's reader emitted, which is the position a savepoint would record, and reads the source's own idle time. Records still to emit, or a record emitted within the last poll interval, hold the suspend with `job busy` on the object. An unreachable REST API holds it with `job unknown`, which is how a missing network policy shows up. This needs no consumer group, no checkpointing and no group ACL, and it never wakes a job.
+With `idle: job`, the controller compares each declared partition's end offset with the last offset the job's reader emitted, which is the position a savepoint would record, and reads the source's own idle time. Records still to emit, or a record emitted within the last poll interval, hold the suspend with `job busy` on the object. Offsets that hold nothing a reader is given, a transaction's commit marker, an aborted transaction or a compacted-away record, are not pending: for a quiet job short of the end, the controller asks the broker what lies in between. An unreachable REST API holds it with `job unknown`, which is how a missing network policy shows up. This needs no consumer group, no checkpointing and no group ACL, and it never wakes a job.
 
 ## Stateless jobs that resume from the consumer group
 
@@ -72,7 +72,7 @@ A `stateless` deployment restarts with empty state. If its Kafka source is built
 - **Offset expiry.** A suspended job commits nothing, and the broker deletes a group's offsets `offsets.retention.minutes` after its last commit: seven days by default, and on Confluent Cloud not something you set. A job that slept longer would resume from its reset strategy and replay or skip the topic. Two things prevent that. `max-sleep`, six days by default, wakes the job without input. It runs for `min-awake`, commits, and once the group has caught up it goes back to sleep without waiting a new idle window. Set `min-awake` above the job's start-up time plus one commit interval. And before any resume the controller checks that the group still has offsets for every partition. If it does not, the job stays asleep with `ResumeHeld` and the reason `resume held: ...`. Restore the offsets, and the held input resumes the job, or set `spec.job.state: running` yourself to accept the replay. `mode: off` is the same human decision and resumes without the check.
 - **New partitions.** A partition added to a topic while the job sleeps has no committed offset either, and holds the resume the same way.
 
-Manual changes are respected. A job someone else suspends is left alone and marked `suspended outside siesta`. A job someone else resumes is treated as awake with a fresh idle window. And a dry run, `config.dryRun`, records every decision in the reason annotation without acting.
+Manual changes are respected. A job someone else suspends is left alone and marked `suspended outside siesta`. A job someone else resumes is treated as awake with a fresh idle window. And a dry run, `config.dryRun` for every job or the `dry-run` annotation for one, records every decision in the reason annotation without acting.
 
 ## Annotations
 
@@ -80,15 +80,16 @@ The prefix is configurable through `--annotation-prefix` and defaults to `siesta
 
 | Annotation | Written by | Value |
 |---|---|---|
-| `<prefix>/mode` | you | `auto` or `off` |
+| `<prefix>/mode` | you | `auto` or `off`. `off` never suspends and resumes a job the controller suspended. Restarts on failure are separate and follow `restart`. |
 | `<prefix>/sources` | you | comma-separated topic names, or `auto` to learn them from the running job and remember them |
 | `<prefix>/consumer-group` | you | optional. When set, idle also means the group has consumed everything. |
 | `<prefix>/idle` | you | optional. `job` adds the running job's own view as the last gate, described above. Needs no consumer group. |
-| `<prefix>/idle-after` | you | a positive duration such as `336h` or `14d` |
+| `<prefix>/idle-after` | you | a positive duration such as `336h`, `14d` or `1d12h` |
 | `<prefix>/min-awake` | you | a duration, default `1h` |
 | `<prefix>/resume-from` | you | optional. `group-offsets` lets a `stateless` job sleep whose Kafka source resumes from the consumer group's committed offsets. Needs `consumer-group`. |
 | `<prefix>/max-sleep` | you | a duration, default `6d`. With `resume-from: group-offsets`, the longest a job sleeps before it is woken to commit again. `0` switches it off. |
-| `<prefix>/restart` | you | `auto`, the default, or `off` |
+| `<prefix>/restart` | you | `auto`, the default, or `off`. With `off` the controller also never marks the job unrecoverable. |
+| `<prefix>/dry-run` | you | optional. `true` records what the controller would do to this job in the reason annotation without doing it, as `config.dryRun` does for every job. |
 | `<prefix>/bootstrap-servers` | you | reserved for a per-deployment Kafka cluster, not implemented yet. Setting it raises `InvalidPolicy`, so that implementing it later breaks nothing. |
 | `<prefix>/state` | controller | `active`, `suspended` or `unrecoverable` |
 | `<prefix>/reason` | controller | why it is in that state, or why it has not changed yet |
@@ -99,7 +100,7 @@ A value the controller cannot read raises `InvalidPolicy` once and the job is le
 
 The written list is the default. It is a contract a human can read, it needs no access to the job, and it lets a job read a topic it should not be woken by. While a job runs, its JobManager knows which topics its Kafka sources read, and once per job instance the controller compares that with the annotation and raises `SourcesVerified`, `SourcesDrift` or, for a job without Kafka source metrics, `SourcesUnverified`. The topics count once two reads at least 30 seconds apart agree: a job restored from a savepoint shows its old topics at once and a newly added one only after the enumerator discovers it. It never edits the annotation.
 
-With `sources: auto` the controller reads the running job's Kafka topics once per job instance, remembers them in the ConfigMap, with a `SourcesLearned` event whenever the list is new or changed, and watches those. Until the job has run once under the controller nothing is known and nothing happens, and the reason says so. A job whose topics change while it sleeps wakes on the old list, and the new list is learned on that run.
+With `sources: auto` the controller reads the running job's Kafka topics once per job instance, remembers them in the ConfigMap, with a `SourcesLearned` event whenever the list is new or changed, and watches those. Until the job has run once under the controller nothing is known and nothing happens, and the reason says so. A job whose topics change while it sleeps wakes on the old list, and the new list is learned on that run. If the ConfigMap is lost while the job sleeps, nothing says what to watch any more, so the job is resumed to be asked again. A job that resumes from group offsets is held asleep instead, with a reason, because whether its group still has offsets is asked per topic.
 
 Only the declared or learned sources wake a job. A job that also reads a non-Kafka source, such as a broadcast stream or a JDBC lookup, is not resumed by activity there.
 

@@ -106,15 +106,17 @@ func (p patcher) merge(ctx context.Context, fd *unstructured.Unstructured, s sta
 		return err
 	}
 	// The operator writes status every few seconds, so the cached resourceVersion is often
-	// behind. Read the object fresh and retry once, unless the one field we are about to set was
-	// changed by someone else in the meantime: that edit wins, and the next tick sees it.
+	// behind. Read the object fresh and retry once, unless spec.job.state changed in the
+	// meantime: the decision was made on the old value, so it is not retried, and the next tick
+	// decides again. That holds for a state annotation alone too: one written from a stale read
+	// right after our own suspend would say active over a spec that says suspended.
 	fresh := fd.DeepCopy()
 	if err := p.Reader.Get(ctx, client.ObjectKeyFromObject(fd), fresh); err != nil {
 		return err
 	}
 	was, _, _ := unstructured.NestedString(fd.Object, "spec", "job", "state")
 	is, _, _ := unstructured.NestedString(fresh.Object, "spec", "job", "state")
-	if spec != nil && was != is {
+	if was != is {
 		return fmt.Errorf("spec.job.state changed from %q to %q while deciding: %w", was, is, err)
 	}
 	body["metadata"].(map[string]any)["resourceVersion"] = fresh.GetResourceVersion()

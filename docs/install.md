@@ -76,7 +76,7 @@ Every knob has a default that fits a typical namespace. Change them through `con
 | `--restart-max`, `--restart-window`, `--restart-backoff` | `3`, `30m`, `1m` | restart budget for failing jobs, backoff doubles within the window |
 | `--failing-after` | `10m` | RESTARTING longer than this counts as failing |
 | `--resume-stall-after` | `10m` | warn once if a resume or a suspend has not completed after this |
-| `--unrecoverable-patterns` | four substrings | errors that mean: never restart, mark unrecoverable |
+| `--unrecoverable-patterns` | four substrings | substrings of `status.reconciliationStatus.error` or `status.error` that mean: never restart, mark unrecoverable. Matched only with `restart` on and on a job that is not STABLE and RUNNING, since the operator can leave an old error behind |
 | `--flink-rest`, `--flink-rest-port` | `true`, `8081` | ask the running job's REST API, and where |
 
 

@@ -70,7 +70,7 @@ func parseFlags() config {
 	flag.BoolVar(&c.flinkRest, "flink-rest", true, "ask the running job's REST API to verify sources and, with idle: job, whether it objects to sleeping")
 	flag.IntVar(&c.flinkRestPort, "flink-rest-port", 8081, "port of the operator's <deployment>-rest Service")
 	flag.StringVar(&c.unrecoverable, "unrecoverable-patterns", "UnknownTopicOrPartition,does not exist,ImagePullBackOff,ErrImagePull",
-		"comma-separated substrings of status.reconciliationStatus.error that mean: never restart")
+		"comma-separated substrings of status.reconciliationStatus.error or status.error that mean: never restart, on a job that is not running")
 	flag.Parse()
 	return c
 }
@@ -121,6 +121,7 @@ func run() error {
 		DryRun:           cfg.dryRun,
 		Probe:            kafkaProbe,
 		Lag:              kafkaProbe,
+		Gaps:             kafkaProbe,
 		Recorder:         mgr.GetEventRecorder("siesta"),
 		Store:            store.Store{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Prefix: cfg.prefix, Seen: &store.Seen{}},
 		Now:              time.Now,
