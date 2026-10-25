@@ -555,3 +555,34 @@ func TestAnAnnotationWriteFromAStaleReadIsNotRetriedOverAChangedSpec(t *testing.
 		t.Fatalf("state annotation must be left as the suspend wrote it, got %q", got)
 	}
 }
+
+// last-state suspends without a savepoint by design: the operator cancels the job and the
+// resume restores from the last checkpoint the HA metadata points at (operator 1.16, seen in
+// the last-state e2e scenario). That is no reason for a warning.
+func TestALastStateSuspendDoesNotWarnAboutTheMissingSavepoint(t *testing.T) {
+	c := startEnv(t)
+	ctx := context.Background()
+	fd := createDeployment(t, c, "last", "last-state")
+	now := t0
+	r := newReconciler(c, &now, fixedOffsets(map[string]string{"in": "5"}))
+	rec := &fakeRecorder{}
+	r.Recorder = rec
+	key := types.NamespacedName{Name: "last", Namespace: "default"}
+	for _, step := range []time.Duration{0, 2 * time.Hour} {
+		now = now.Add(step)
+		if _, err := r.Reconcile(ctx, reconcileRequest(key)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if s := specJobState(t, c, key); s != "suspended" {
+		t.Fatal("setup: expected a suspend")
+	}
+	setStatus(t, c, fd, map[string]any{"lifecycleState": "SUSPENDED"})
+	now = now.Add(time.Minute)
+	if _, err := r.Reconcile(ctx, reconcileRequest(key)); err != nil {
+		t.Fatal(err)
+	}
+	if n := rec.count("SuspendedWithoutSavepoint"); n != 0 {
+		t.Fatalf("a last-state suspend must not warn, events %v", rec.reasons)
+	}
+}

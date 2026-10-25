@@ -1,5 +1,5 @@
 # Keeps the SHA-pinned actions in the publish job, and the rest, current; the version comment
-# next to each pin is updated with it.
+# next to each pin is updated with it. Also the digest-pinned base images and the Go modules.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -7,3 +7,13 @@ updates:
     schedule: { interval: weekly }
     groups:
       actions: { patterns: ["*"] }
+  - package-ecosystem: docker
+    directory: /
+    schedule: { interval: weekly }
+  - package-ecosystem: gomod
+    directory: /
+    schedule: { interval: weekly }
+    groups:
+      k8s: { patterns: ["k8s.io/*", "sigs.k8s.io/*"] }
+      kafka: { patterns: ["github.com/twmb/*"] }
+      testcontainers: { patterns: ["github.com/testcontainers/*"] }

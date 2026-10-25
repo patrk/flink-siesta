@@ -17,7 +17,7 @@ The image and the chart are published to the GitHub Container Registry on every 
       --set kafka.bootstrapServers=... --set kafka.securityProtocol=SASL_SSL \
       --set kafka.sasl.existingSecret=kafka-auth
 
-The chart's `image.tag` defaults to its `appVersion`, so the chart and the image always move together. On a locked-down cluster the values you will reach for are `image.digest`, `imagePullSecrets`, `podLabels`, `nodeSelector` and `tolerations`, `priorityClassName`, `serviceAccount.annotations` for workload identity, `admissionPolicy.enabled: false` when the tenant may not create cluster-scoped objects, and `extraObjects` for the network policy below, rendered through `tpl` so it can use the release name. Two replicas prefer different nodes by default.
+The chart's `image.tag` defaults to its `appVersion`, so the chart and the image always move together. On a locked-down cluster the values you will reach for are `image.digest`, `imagePullSecrets`, `podLabels`, `nodeSelector` and `tolerations`, `priorityClassName`, `serviceAccount.annotations` for workload identity, `admissionPolicy.enabled: false` when the tenant may not create cluster-scoped objects, and `extraObjects` for the network policy below, rendered through `tpl` so it can use the release name. Two replicas prefer different nodes by default, and a PodDisruptionBudget keeps one of them through a node drain. Every value is described in `values.yaml`.
 
 ## Connecting to Kafka
 
@@ -29,6 +29,8 @@ The controller uses Kafka's own vocabulary. Set these chart values, or the match
 | Confluent Cloud | `SASL_SSL` | `PLAIN` | API key as username, API secret as password |
 | SCRAM-secured cluster | `SASL_SSL` | `SCRAM-SHA-256` or `SCRAM-SHA-512` | username and password |
 | mTLS | `SSL` | | client certificate and key in a Secret, `tls.clientCert: true` |
+| OAuth, workload identity | `SASL_SSL` | `OAUTHBEARER` | none: a projected ServiceAccount token, `sasl.oauth.serviceAccountToken` |
+| OAuth, client credentials | `SASL_SSL` | `OAUTHBEARER` | client id and secret in a Secret, `sasl.oauth.tokenEndpoint` |
 
 Credentials come from Secrets you create. The chart never renders them into values.
 
@@ -38,7 +40,16 @@ Credentials come from Secrets you create. The chart never renders them into valu
       --set kafka.securityProtocol=SASL_SSL \
       --set kafka.sasl.existingSecret=kafka-auth
 
-A private CA goes in a Secret referenced by `kafka.tls.existingSecret` under the key `ca.crt`. The credential needs Describe on the topics you annotate, and Describe on the consumer group when `consumer-group` is set. On Confluent that is DeveloperRead on the topic prefix and on the group. The chart mounts the SASL Secret as files and the controller reads them on every new connection, so a rotated Secret is picked up as soon as the kubelet refreshes the mount and the next connection authenticates. When running the binary outside the chart with `KAFKA_SASL_USERNAME` and `KAFKA_SASL_PASSWORD` in the environment, a rotation still needs a restart.
+A private CA goes in a Secret referenced by `kafka.tls.existingSecret` under the key `ca.crt`. The CA, the client certificate and the key are read again for every new connection, so a rotation by cert-manager needs no restart. The credential needs Describe on the topics you annotate, and Describe on the consumer group when `consumer-group` is set. On Confluent that is DeveloperRead on the topic prefix and on the group. The chart mounts the SASL Secret as files and the controller reads them on every new connection, so a rotated Secret is picked up as soon as the kubelet refreshes the mount and the next connection authenticates. When running the binary outside the chart with `KAFKA_SASL_USERNAME` and `KAFKA_SASL_PASSWORD` in the environment, a rotation still needs a restart.
+
+### OAuth
+
+With `sasl.mechanism: OAUTHBEARER` there are two ways to get a token.
+
+- **Workload identity.** For a Kafka cluster that trusts this Kubernetes cluster's OIDC issuer, such as a Confluent Cloud identity pool or Strimzi validating against the cluster's JWKS, set `sasl.oauth.serviceAccountToken.enabled: true` and its `audience`. The chart mounts a projected ServiceAccount token, the kubelet rotates it, and the controller reads it on every authentication. No Secret is involved.
+- **Client credentials.** Set `sasl.oauth.tokenEndpoint`, an optional `scope`, and `sasl.existingSecret` holding `client-id` and `client-secret`. The controller runs the client credentials grant, as Kafka clients do with `sasl.oauthbearer.token.endpoint.url`, and reuses the token until a minute before it expires.
+
+Confluent Cloud also wants the cluster and the identity pool as SASL extensions: `sasl.oauth.extensions: logicalCluster=lkc-abc123,identityPoolId=pool-xyz`. AWS MSK IAM is not supported yet.
 
 ### Network policy
 
@@ -59,7 +70,11 @@ On a cluster with default-deny egress the controller needs three paths: the Kube
           ports:
             - port: 8081
 
-The API server and Kafka lines depend on your cluster and are usually the same ones your Flink jobs already have. With Cilium, `toEntities: [kube-apiserver]` and `toFQDNs` on the broker names.
+The API server and Kafka lines depend on your cluster and are usually the same ones your Flink jobs already have. With Cilium, `toEntities: [kube-apiserver]` and `toFQDNs` on the broker names. The chart can render a policy for you with `networkPolicy.enabled: true`: it allows ingress to the metrics port from `networkPolicy.metricsFrom`, and, when `networkPolicy.egress` is set, only that egress.
+
+### Metrics
+
+The metrics endpoint is plain HTTP on port 8080 by default, readable by anything that reaches the pod. With `metrics.secure: true` it serves HTTPS with a self-signed certificate, and only to callers whose bearer token the Kubernetes API authenticates and authorizes for `GET /metrics`. Bind the ClusterRole `<release>-<namespace>-metrics-reader` to your Prometheus' ServiceAccount; the chart's ServiceMonitor then scrapes over HTTPS with that token. Answers are remembered for a minute, so a scrape every 30 seconds costs two API calls a minute.
 
 ### Defaults
 
@@ -73,6 +88,7 @@ Every knob has a default that fits a typical namespace. Change them through `con
 | `--probe-timeout` | `10s` | bound for the probes of one tick: the Kafka reads and each call to the job's REST API get this long each |
 | `--max-concurrent-reconciles` | `4` | deployments reconciled at once; see [Scale](development.md#scale) |
 | `--kube-api-qps`, `--kube-api-burst` | `20`, `30` | client-side rate limit towards the Kubernetes API |
+| `--metrics-secure` | `false` | HTTPS metrics for authenticated and authorized callers only, chart value `metrics.secure` |
 | `--restart-max`, `--restart-window`, `--restart-backoff` | `3`, `30m`, `1m` | restart budget for failing jobs, backoff doubles within the window |
 | `--failing-after` | `10m` | RESTARTING longer than this counts as failing |
 | `--resume-stall-after` | `10m` | warn once if a resume or a suspend has not completed after this |

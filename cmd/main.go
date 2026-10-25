@@ -19,6 +19,7 @@ import (
 	"github.com/patrk/flink-siesta/internal/controller"
 	"github.com/patrk/flink-siesta/internal/decide"
 	"github.com/patrk/flink-siesta/internal/flink"
+	"github.com/patrk/flink-siesta/internal/metricsauth"
 	"github.com/patrk/flink-siesta/internal/probe"
 	"github.com/patrk/flink-siesta/internal/store"
 )
@@ -41,7 +42,7 @@ func main() {
 // list of decisions, and so a test could build a controller the way main does.
 type config struct {
 	prefix, namespace, brokers, metricsAddr, probeAddr, unrecoverable string
-	dryRun, leaderElect, flinkRest                                    bool
+	dryRun, leaderElect, flinkRest, metricsSecure                     bool
 	flinkRestPort, maxRestarts, concurrency, apiBurst                 int
 	apiQPS                                                            float64
 	restartWindow, restartBackoff, pollInterval, probeTimeout         time.Duration
@@ -55,6 +56,7 @@ func parseFlags() config {
 	flag.BoolVar(&c.dryRun, "dry-run", false, "record decisions in annotations but never patch spec")
 	flag.StringVar(&c.brokers, "kafka-bootstrap", "", "comma-separated Kafka bootstrap servers (overrides KAFKA_BOOTSTRAP_SERVERS)")
 	flag.StringVar(&c.metricsAddr, "metrics-bind-address", ":8080", "metrics endpoint")
+	flag.BoolVar(&c.metricsSecure, "metrics-secure", false, "serve metrics over HTTPS, only to callers the Kubernetes API authenticates and authorizes for GET /metrics")
 	flag.StringVar(&c.probeAddr, "health-probe-bind-address", ":8081", "health endpoint")
 	flag.BoolVar(&c.leaderElect, "leader-elect", true, "enable leader election")
 	flag.IntVar(&c.maxRestarts, "restart-max", 3, "restarts allowed per window")
@@ -84,9 +86,18 @@ func run() error {
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme) // core types for Events and Leases; FlinkDeployment is handled as unstructured
 
+	restCfg := ctrl.GetConfigOrDie()
+	restCfg.QPS, restCfg.Burst = float32(cfg.apiQPS), cfg.apiBurst
+	metricsOpts := metricsserver.Options{BindAddress: cfg.metricsAddr}
+	if cfg.metricsSecure {
+		// A self-signed certificate, and a TokenReview and SubjectAccessReview per scrape: the
+		// caller's ServiceAccount needs get on the /metrics non-resource URL.
+		metricsOpts.SecureServing = true
+		metricsOpts.FilterProvider = metricsauth.Filter
+	}
 	opts := ctrl.Options{
 		Scheme:                 scheme,
-		Metrics:                metricsserver.Options{BindAddress: cfg.metricsAddr},
+		Metrics:                metricsOpts,
 		HealthProbeBindAddress: cfg.probeAddr,
 		LeaderElection:         cfg.leaderElect,
 		LeaderElectionID:       "siesta.flink.io",
@@ -94,8 +105,6 @@ func run() error {
 	if cfg.namespace != "" {
 		opts.Cache = cache.Options{DefaultNamespaces: map[string]cache.Config{cfg.namespace: {}}}
 	}
-	restCfg := ctrl.GetConfigOrDie()
-	restCfg.QPS, restCfg.Burst = float32(cfg.apiQPS), cfg.apiBurst
 	mgr, err := ctrl.NewManager(restCfg, opts)
 	if err != nil {
 		return fmt.Errorf("manager: %w", err)
@@ -148,6 +157,6 @@ func run() error {
 	_ = mgr.AddHealthzCheck("healthz", healthz.Ping)
 	_ = mgr.AddReadyzCheck("readyz", healthz.Ping)
 
-	log.Info("starting", "prefix", cfg.prefix, "namespace", cfg.namespace, "dryRun", cfg.dryRun, "concurrency", cfg.concurrency)
+	log.Info("starting", "prefix", cfg.prefix, "namespace", cfg.namespace, "dryRun", cfg.dryRun, "concurrency", cfg.concurrency, "metricsSecure", cfg.metricsSecure)
 	return mgr.Start(ctrl.SetupSignalHandler())
 }

@@ -70,6 +70,7 @@ spec:
             - --restart-backoff={{ .Values.config.restart.backoff }}
             - --flink-rest={{ .Values.config.flinkRest }}
             - --leader-elect={{ gt (int .Values.replicaCount) 1 }}
+            - --metrics-secure={{ .Values.metrics.secure }}
             {{- range .Values.extraArgs }}
             - {{ . | quote }}
             {{- end }}
@@ -80,7 +81,30 @@ spec:
               value: {{ .Values.kafka.bootstrapServers | quote }}
             - name: KAFKA_SECURITY_PROTOCOL
               value: {{ .Values.kafka.securityProtocol | quote }}
-            {{- if .Values.kafka.sasl.existingSecret }}
+            {{- $oauth := .Values.kafka.sasl.oauth }}
+            {{- if eq (upper .Values.kafka.sasl.mechanism) "OAUTHBEARER" }}
+            - name: KAFKA_SASL_MECHANISM
+              value: OAUTHBEARER
+            {{- if $oauth.serviceAccountToken.enabled }}
+            - name: KAFKA_SASL_OAUTHBEARER_TOKEN_FILE
+              value: /var/run/secrets/siesta/kafka-token/token
+            {{- else }}
+            - name: KAFKA_SASL_OAUTHBEARER_TOKEN_ENDPOINT
+              value: {{ required "kafka.sasl.oauth.tokenEndpoint or serviceAccountToken.enabled is required with OAUTHBEARER" $oauth.tokenEndpoint | quote }}
+            - name: KAFKA_SASL_OAUTHBEARER_CLIENT_ID
+              valueFrom: { secretKeyRef: { name: {{ required "kafka.sasl.existingSecret is required with a tokenEndpoint" .Values.kafka.sasl.existingSecret }}, key: {{ $oauth.clientIdKey }} } }
+            - name: KAFKA_SASL_OAUTHBEARER_CLIENT_SECRET_FILE
+              value: /etc/siesta/kafka-auth/{{ $oauth.clientSecretKey }}
+            {{- with $oauth.scope }}
+            - name: KAFKA_SASL_OAUTHBEARER_SCOPE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- with $oauth.extensions }}
+            - name: KAFKA_SASL_OAUTHBEARER_EXTENSIONS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- else if .Values.kafka.sasl.existingSecret }}
             - name: KAFKA_SASL_MECHANISM
               value: {{ .Values.kafka.sasl.mechanism | quote }}
             # Mounted as files, not env: the kubelet refreshes them after a rotation, and the
@@ -114,10 +138,14 @@ spec:
           readinessProbe: { httpGet: { path: /readyz, port: health } }
           securityContext: {{ toYaml .Values.securityContext | nindent 12 }}
           resources: {{ toYaml .Values.resources | nindent 12 }}
-          {{- if or .Values.kafka.tls.existingSecret .Values.kafka.sasl.existingSecret .Values.extraVolumeMounts }}
+          {{- $token := and (eq (upper .Values.kafka.sasl.mechanism) "OAUTHBEARER") .Values.kafka.sasl.oauth.serviceAccountToken.enabled }}
+          {{- if or .Values.kafka.tls.existingSecret .Values.kafka.sasl.existingSecret .Values.extraVolumeMounts $token }}
           volumeMounts:
             {{- if .Values.kafka.sasl.existingSecret }}
             - { name: kafka-auth, mountPath: /etc/siesta/kafka-auth, readOnly: true }
+            {{- end }}
+            {{- if $token }}
+            - { name: kafka-token, mountPath: /var/run/secrets/siesta/kafka-token, readOnly: true }
             {{- end }}
             {{- if .Values.kafka.tls.existingSecret }}
             - { name: kafka-tls, mountPath: /etc/siesta/kafka-tls, readOnly: true }
@@ -126,11 +154,21 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
           {{- end }}
-      {{- if or .Values.kafka.tls.existingSecret .Values.kafka.sasl.existingSecret .Values.extraVolumes }}
+      {{- if or .Values.kafka.tls.existingSecret .Values.kafka.sasl.existingSecret .Values.extraVolumes $token }}
       volumes:
         {{- if .Values.kafka.sasl.existingSecret }}
         - name: kafka-auth
           secret: { secretName: {{ .Values.kafka.sasl.existingSecret }} }
+        {{- end }}
+        {{- if $token }}
+        # Rotated by the kubelet before it expires; the controller reads it on every authentication.
+        - name: kafka-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  audience: {{ required "kafka.sasl.oauth.serviceAccountToken.audience is required" .Values.kafka.sasl.oauth.serviceAccountToken.audience | quote }}
+                  expirationSeconds: {{ .Values.kafka.sasl.oauth.serviceAccountToken.expirationSeconds }}
         {{- end }}
         {{- if .Values.kafka.tls.existingSecret }}
         - name: kafka-tls
