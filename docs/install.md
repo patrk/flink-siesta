@@ -87,7 +87,7 @@ Every knob has a default that fits a typical namespace. Change them through `con
 | `--poll-interval` | `1m` | how often each deployment is visited |
 | `--probe-timeout` | `10s` | bound for the probes of one tick: the Kafka reads and each call to the job's REST API get this long each |
 | `--max-concurrent-reconciles` | `4` | deployments reconciled at once; see [Scale](development.md#scale) |
-| `--kube-api-qps`, `--kube-api-burst` | `20`, `30` | client-side rate limit towards the Kubernetes API |
+| `--kube-api-qps`, `--kube-api-burst` | `50`, `100` | client-side rate limit towards the Kubernetes API; keep qps above deployments/60, see [Scale](development.md#scale) |
 | `--metrics-secure` | `false` | HTTPS metrics for authenticated and authorized callers only, chart value `metrics.secure` |
 | `--restart-max`, `--restart-window`, `--restart-backoff` | `3`, `30m`, `1m` | restart budget for failing jobs, backoff doubles within the window |
 | `--failing-after` | `10m` | RESTARTING longer than this counts as failing |

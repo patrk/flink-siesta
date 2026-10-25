@@ -39,3 +39,15 @@ func TestChangedOutside(t *testing.T) {
 		})
 	}
 }
+
+// Every deployment is revisited on a timer and each one deserves its turn: a priority queue that
+// ranks the initial list below requeues starves part of the fleet once the controller is saturated.
+func TestTheQueueIsFIFO(t *testing.T) {
+	opts := (&Reconciler{Concurrency: 8}).controllerOptions()
+	if opts.UsePriorityQueue == nil || *opts.UsePriorityQueue {
+		t.Fatal("the priority queue must be off")
+	}
+	if opts.MaxConcurrentReconciles != 8 {
+		t.Fatalf("workers = %d", opts.MaxConcurrentReconciles)
+	}
+}

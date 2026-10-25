@@ -22,11 +22,12 @@ config:
   # Deployments reconciled at once. A tick mostly waits on Kafka and the job's REST API, so
   # one worker per hundred or so deployments keeps a pass inside pollInterval.
   maxConcurrentReconciles: 4
-  # Client-side rate limit towards the Kubernetes API. A quiet tick costs one request, a
-  # transition three or four.
+  # Client-side rate limit towards the Kubernetes API. A quiet tick costs one request, the read
+  # of the deployment's memory, and a transition three or four: keep qps above deployments/60
+  # plus room for the transitions. 50 carries about 2,500 deployments.
   kubeAPI:
-    qps: 20
-    burst: 30
+    qps: 50
+    burst: 100
   # Ask each running job's REST API (<deployment>-rest:8081) to verify the sources annotation
   # against its graph and, with the idle: job annotation, whether the job objects to sleeping.
   # Needs egress from the controller to the JobManager pods on that port.

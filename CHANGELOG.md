@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix: the FlinkDeployment was read from the API server on every tick, not from the watch's cache, because controller-runtime serves unstructured objects from its cache only when told to. Every tick cost two requests instead of one, which capped a pass at 20 deployments a second under the client's rate limit.
+- Fix: controller-runtime's priority queue ranks the objects of the initial list below requeues. Once the controller was saturated, the deployments requeued by their own ticks took every turn, and at 2,000 deployments 795 were never visited again after the first pass, so they never slept. The queue is first in, first out now.
+- `--kube-api-qps` and `--kube-api-burst` default to 50 and 100. A quiet tick costs one request, so 50 carries about 2,500 deployments.
+- `make e2e-load-test` runs N deployments with simulated status against one broker on KinD. At 2,000: a first pass in 78 s, every deployment visited every 60 s, 33.5 API requests a second, all asleep 397 s after install, 200 resumed within 69 s of their records, 162 MiB. It found both fixes above.
 - OAUTHBEARER for Kafka, two ways: a token file read on every authentication, such as a projected ServiceAccount token for a cluster that trusts this cluster's OIDC issuer, which the chart can mount; or the client credentials grant against an identity provider, the token reused until a minute before it expires. SASL extensions for Confluent Cloud's `logicalCluster` and `identityPoolId`. Tested against an Apache Kafka broker.
 - The Kafka CA, client certificate and key are read again for every new connection, so a certificate rotated by cert-manager needs no restart. They were read once at startup.
 - `--metrics-secure`, chart value `metrics.secure`: metrics over HTTPS, only for callers whose token the Kubernetes API authenticates and authorizes for `GET /metrics`. Off by default. Done with a TokenReview and a SubjectAccessReview instead of controller-runtime's filters, which would have grown the binary from 34 to 55 MB.
