@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- OAUTHBEARER for Kafka, two ways: a token file read on every authentication, such as a projected ServiceAccount token for a cluster that trusts this cluster's OIDC issuer, which the chart can mount; or the client credentials grant against an identity provider, the token reused until a minute before it expires. SASL extensions for Confluent Cloud's `logicalCluster` and `identityPoolId`. Tested against an Apache Kafka broker.
+- The Kafka CA, client certificate and key are read again for every new connection, so a certificate rotated by cert-manager needs no restart. They were read once at startup.
+- `--metrics-secure`, chart value `metrics.secure`: metrics over HTTPS, only for callers whose token the Kubernetes API authenticates and authorizes for `GET /metrics`. Off by default. Done with a TokenReview and a SubjectAccessReview instead of controller-runtime's filters, which would have grown the binary from 34 to 55 MB.
+- Fix: every sleep of a `last-state` job raised `SuspendedWithoutSavepoint`. The operator takes no savepoint for a `last-state` suspend by design. Found by the new `last-state` e2e scenario, which also checks the resume restores from the last checkpoint.
+- The chart adds a PodDisruptionBudget with more than one replica, and an optional NetworkPolicy.
+- Base images pinned by digest, Dependabot for them and the Go modules, `govulncheck` on every pull request and every night, `setup-envtest` pinned, `golang.org/x/net` 0.60.0, and a `SECURITY.md`.
+- `docs/roadmap.md` lists what is known and not built yet.
 - Fix: with transactional producers, `idle: job` never let a job sleep. Each transaction ends in a commit marker, which takes an offset no reader is given, so the gate always counted one record pending. For a quiet job short of the end offset, the controller now asks the broker whether anything a consumer is given lies in between: markers, aborted transactions and compacted-away offsets do not count, an open transaction does. Tested against a real broker and, in the `job-graph` e2e scenario, a transactional producer.
 - Fix: a metrics read for a source with more than about 50 partitions did not fit the 4096-byte request line Flink's REST server accepts, which answers 404, so `idle: job` held such a job with `job unknown` for good. The read is now split across requests.
 - Fix: the unrecoverable patterns were matched on every tick, also against an old `status.error` on a job that had recovered and was running, which marked it unrecoverable and kept it awake. They are now matched only with `restart` on and on a job that is not STABLE and RUNNING.

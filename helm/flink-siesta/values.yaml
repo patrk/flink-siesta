@@ -41,10 +41,31 @@ kafka:
   bootstrapServers: ""
   securityProtocol: PLAINTEXT
   sasl:
+    # PLAIN, SCRAM-SHA-256, SCRAM-SHA-512 or OAUTHBEARER. Takes effect with a SASL_* securityProtocol.
     mechanism: PLAIN
+    # PLAIN and SCRAM: a Secret with the username and password, mounted as files and read on
+    # every new connection, so a rotation needs no restart. OAUTHBEARER with tokenEndpoint: the
+    # Secret with the client id and secret.
     existingSecret: ""
     usernameKey: username
     passwordKey: password
+    oauth:
+      # Workload identity: a projected ServiceAccount token, which the kubelet rotates, for a
+      # cluster that trusts this Kubernetes cluster's OIDC issuer (a Confluent Cloud identity
+      # pool, Strimzi with JWKS validation). No Secret at all.
+      serviceAccountToken:
+        enabled: false
+        audience: ""
+        expirationSeconds: 3600
+      # Or the client credentials grant against your identity provider, as Kafka clients do it
+      # with sasl.oauthbearer.token.endpoint.url. Client id and secret come from existingSecret.
+      tokenEndpoint: ""
+      clientIdKey: client-id
+      clientSecretKey: client-secret
+      scope: ""
+      # SASL extensions sent with the token, for example
+      # logicalCluster=lkc-abc123,identityPoolId=pool-xyz for Confluent Cloud.
+      extensions: ""
   tls:
     existingSecret: ""
     caKey: ca.crt
@@ -54,6 +75,10 @@ kafka:
     insecureSkipVerify: false
 
 metrics:
+  # Serve metrics over HTTPS, only to callers the Kubernetes API authenticates and authorizes
+  # for GET /metrics. Adds a ClusterRole for TokenReviews and SubjectAccessReviews, and one,
+  # <release>-<namespace>-metrics-reader, to bind to your Prometheus' ServiceAccount.
+  secure: false
   service:
     enabled: true
     port: 8080
@@ -64,6 +89,21 @@ metrics:
 
 rbac:
   create: true
+
+# With more than one replica, a PodDisruptionBudget keeps one running through node drains. The
+# standby takes over through leader election; nothing is lost while none runs, it only waits.
+podDisruptionBudget:
+  enabled: true
+
+# Optional NetworkPolicy. Off by default: the egress the controller needs (the API server,
+# Kafka, the JobManagers) differs per cluster. On, it allows ingress to the metrics and health
+# ports from metricsFrom and the egress listed in egress.
+networkPolicy:
+  enabled: false
+  # Peers allowed to scrape :8080, for example a namespaceSelector for your monitoring.
+  metricsFrom: []
+  # Egress rules, as in a NetworkPolicy. Empty allows all egress.
+  egress: []
 
 # ValidatingAdmissionPolicy (Kubernetes 1.30+) that lets the controller change only
 # spec.job.state, spec.restartNonce and its own annotations. Cluster-scoped objects; on by

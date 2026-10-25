@@ -1,16 +1,20 @@
 package probe
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"math/big"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -155,5 +159,101 @@ func TestCredentialsFromFilesAreReadEachTime(t *testing.T) {
 	c.SASLPasswordFile = filepath.Join(dir, "missing")
 	if _, err := c.Opts(); err == nil {
 		t.Fatal("a missing credential file must fail Opts")
+	}
+}
+
+// testCA is a throwaway CA that can sign a server certificate for 127.0.0.1.
+type testCA struct {
+	cert *x509.Certificate
+	key  *ecdsa.PrivateKey
+	pem  []byte
+}
+
+func newTestCA(t *testing.T, name string) testCA {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: name},
+		NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour),
+		IsCA: true, KeyUsage: x509.KeyUsageCertSign, BasicConstraintsValid: true}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, _ := x509.ParseCertificate(der)
+	return testCA{cert: cert, key: key, pem: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})}
+}
+
+func (ca testCA) serverCert(t *testing.T) tls.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "broker"},
+		NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour),
+		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")}, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.cert, &key.PublicKey, ca.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+}
+
+// cert-manager rotates the CA bundle and the certificates in the mounted Secret while the
+// controller runs. Every new connection reads the files again, so a rotation needs no restart.
+func TestTLSFilesAreReadOnEveryDial(t *testing.T) {
+	first, second := newTestCA(t, "first"), newTestCA(t, "second")
+	var serving atomic.Pointer[tls.Certificate]
+	cert := first.serverCert(t)
+	serving.Store(&cert)
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{MinVersion: tls.VersionTLS12,
+		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return serving.Load(), nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() { _ = conn.(*tls.Conn).Handshake(); _ = conn.Close() }()
+		}
+	}()
+
+	dir := t.TempDir()
+	caFile := filepath.Join(dir, "ca.crt")
+	if err := os.WriteFile(caFile, first.pem, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := KafkaConfig{BootstrapServers: []string{ln.Addr().String()}, SecurityProtocol: "SSL", TLSCAFile: caFile}
+	if _, err := c.Opts(); err != nil {
+		t.Fatal(err)
+	}
+	dial := func() error {
+		conn, err := c.dialTLS(context.Background(), "tcp", ln.Addr().String())
+		if err == nil {
+			conn.Close()
+		}
+		return err
+	}
+	if err := dial(); err != nil {
+		t.Fatalf("a broker signed by the configured CA must be trusted: %v", err)
+	}
+
+	cert = second.serverCert(t)
+	serving.Store(&cert)
+	if err := dial(); err == nil {
+		t.Fatal("a broker signed by a CA not in the file must not be trusted")
+	}
+	if err := os.WriteFile(caFile, second.pem, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := dial(); err != nil {
+		t.Fatalf("the rotated CA file must be read on the next dial: %v", err)
 	}
 }

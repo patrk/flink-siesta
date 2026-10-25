@@ -26,6 +26,22 @@ jobs:
           helm template t helm/flink-siesta --set kafka.bootstrapServers=b:9092 --set kafka.securityProtocol=SASL_SSL \
             --set kafka.sasl.existingSecret=s --set kafka.tls.existingSecret=t --set metrics.serviceMonitor.enabled=true \
             | grep -q "kind: ServiceMonitor"
+      - run: |
+          helm template t helm/flink-siesta --set kafka.bootstrapServers=b:9092 --set metrics.secure=true \
+            --set metrics.serviceMonitor.enabled=true | grep -q "scheme: https"
+          helm template t helm/flink-siesta --set kafka.bootstrapServers=b:9092 --set kafka.securityProtocol=SASL_SSL \
+            --set kafka.sasl.mechanism=OAUTHBEARER --set kafka.sasl.oauth.serviceAccountToken.enabled=true \
+            --set kafka.sasl.oauth.serviceAccountToken.audience=kafka | grep -q "serviceAccountToken:"
+
+  # Known vulnerabilities reachable from our code, in the modules and in the Go release. The
+  # nightly run repeats it, since new advisories arrive without a commit.
+  vulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version-file: go.mod }
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
 
   integration:
     runs-on: ubuntu-latest
@@ -45,7 +61,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [suspend-resume, job-graph, outage, admission-gc, restart-budget, sources-auto, group-offsets]
+        scenario: [suspend-resume, job-graph, outage, admission-gc, restart-budget, sources-auto, group-offsets, last-state]
     name: e2e ${{ matrix.scenario }}
     steps:
       - uses: actions/checkout@v7

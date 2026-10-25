@@ -23,8 +23,8 @@ envtest:
 	mkdir -p test/crds
 	curl -sSL -o test/crds/flinkdeployments.yml \
 	  https://raw.githubusercontent.com/apache/flink-kubernetes-operator/release-$(FLINK_OPERATOR_VERSION)/helm/flink-kubernetes-operator/crds/flinkdeployments.flink.apache.org-v1.yml
-	go run sigs.k8s.io/controller-runtime/tools/setup-envtest@latest use $(ENVTEST_K8S_VERSION) -p path > .envtest-path
-	KUBEBUILDER_ASSETS=$$(cat .envtest-path) go test ./internal/controller/
+	go run sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.25.2 use $(ENVTEST_K8S_VERSION) -p path > .envtest-path
+	KUBEBUILDER_ASSETS=$$(cat .envtest-path) go test ./internal/controller/ ./internal/metricsauth/
 
 soak:
 	KUBEBUILDER_ASSETS=$$(cat .envtest-path) go test -tags soak -run TestSoak -v -timeout $(SOAK_TIMEOUT) ./internal/controller/
