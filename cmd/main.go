@@ -12,6 +12,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -63,8 +64,8 @@ func parseFlags() config {
 	flag.DurationVar(&c.restartWindow, "restart-window", 30*time.Minute, "restart budget window")
 	flag.DurationVar(&c.restartBackoff, "restart-backoff", time.Minute, "first restart backoff; doubles each time within the window")
 	flag.IntVar(&c.concurrency, "max-concurrent-reconciles", 4, "deployments reconciled at once; raise it with the number of deployments (a tick mostly waits on Kafka and the job)")
-	flag.Float64Var(&c.apiQPS, "kube-api-qps", 20, "sustained requests per second to the Kubernetes API")
-	flag.IntVar(&c.apiBurst, "kube-api-burst", 30, "burst of requests to the Kubernetes API above kube-api-qps")
+	flag.Float64Var(&c.apiQPS, "kube-api-qps", 50, "sustained requests per second to the Kubernetes API; a quiet tick costs one, so keep it above deployments/60")
+	flag.IntVar(&c.apiBurst, "kube-api-burst", 100, "burst of requests to the Kubernetes API above kube-api-qps")
 	flag.DurationVar(&c.pollInterval, "poll-interval", time.Minute, "how often each deployment is revisited")
 	flag.DurationVar(&c.probeTimeout, "probe-timeout", 10*time.Second, "bound for the probes of one tick: the Kafka reads (offsets, lag) and each call to the job's REST API get this long each")
 	flag.DurationVar(&c.stallAfter, "resume-stall-after", 10*time.Minute, "warn once if a resumed job is not RUNNING after this")
@@ -75,6 +76,25 @@ func parseFlags() config {
 		"comma-separated substrings of status.reconciliationStatus.error or status.error that mean: never restart, on a job that is not running")
 	flag.Parse()
 	return c
+}
+
+// managerOptions are the manager's settings that follow from the flags.
+func managerOptions(cfg config, scheme *runtime.Scheme) ctrl.Options {
+	opts := ctrl.Options{
+		Scheme:                 scheme,
+		HealthProbeBindAddress: cfg.probeAddr,
+		LeaderElection:         cfg.leaderElect,
+		LeaderElectionID:       "siesta.flink.io",
+		// FlinkDeployments are read as unstructured objects, which controller-runtime's client
+		// fetches from the API server on every read unless told to use the cache it already
+		// keeps for the watch. Without this every tick cost a GET, and the client's rate limit
+		// capped a pass at 20 deployments a second.
+		Client: client.Options{Cache: &client.CacheOptions{Unstructured: true}},
+	}
+	if cfg.namespace != "" {
+		opts.Cache = cache.Options{DefaultNamespaces: map[string]cache.Config{cfg.namespace: {}}}
+	}
+	return opts
 }
 
 // run holds every defer; main only translates its error into an exit code.
@@ -95,16 +115,8 @@ func run() error {
 		metricsOpts.SecureServing = true
 		metricsOpts.FilterProvider = metricsauth.Filter
 	}
-	opts := ctrl.Options{
-		Scheme:                 scheme,
-		Metrics:                metricsOpts,
-		HealthProbeBindAddress: cfg.probeAddr,
-		LeaderElection:         cfg.leaderElect,
-		LeaderElectionID:       "siesta.flink.io",
-	}
-	if cfg.namespace != "" {
-		opts.Cache = cache.Options{DefaultNamespaces: map[string]cache.Config{cfg.namespace: {}}}
-	}
+	opts := managerOptions(cfg, scheme)
+	opts.Metrics = metricsOpts
 	mgr, err := ctrl.NewManager(restCfg, opts)
 	if err != nil {
 		return fmt.Errorf("manager: %w", err)

@@ -45,7 +45,22 @@ One reconcile is one cached read of the deployment, one uncached read of its Con
 
 A tick mostly waits: on the broker, on the job's REST API with `idle: job` or `sources: auto`, and on the API server. `--max-concurrent-reconciles` (default 4) sets how many deployments wait at once; one deployment is never reconciled twice at once. Size it so a pass fits in the poll interval: with ticks of 50 ms, 4 workers visit about 4,800 deployments a minute. The worst case is a broker that swallows connections, where every tick waits out `--probe-timeout` on Kafka: 1,300 deployments, 10 s each and 4 workers take about 54 minutes a pass, against 3.6 hours on one worker. Nothing acts on an unknown reading, so a slow pass delays decisions and never makes a wrong one. For a large fleet, raise the workers to 16 or 32 and lower `--probe-timeout`.
 
-The Kubernetes client is rate limited to `--kube-api-qps` 20 and `--kube-api-burst` 30. A quiet tick costs one request and a transition three or four, so the default carries about a thousand quiet deployments a minute with room for transitions. Raise both with the workers. The Kafka calls are not batched across deployments: at 1,300 deployments with a consumer group that is about 45 admin requests a second, well inside what a broker serves.
+The deployment comes from the watch's cache, so a quiet tick costs one request to the API server, the read of the ConfigMap, and a transition three or four. The client is rate limited to `--kube-api-qps` 50 and `--kube-api-burst` 100, which carries about 2,500 quiet deployments a minute with room for transitions: keep `--kube-api-qps` above deployments/60. A pass that the limit cannot fit into the poll interval is slower, never unfair: the work queue is first in, first out, so every deployment waits its turn. The Kafka calls are not batched across deployments: at 1,300 deployments with a consumer group that is about 45 admin requests a second, well inside what a broker serves.
+
+### Measured
+
+`make e2e-load-test LOAD_DEPLOYMENTS=2000` creates that many FlinkDeployments on KinD, writes their status the way the operator would, with the operator scaled to zero so no Flink pod runs, and points them at 100 topics on one broker. With the controller at its defaults, on a laptop:
+
+| | 2,000 deployments |
+|---|---|
+| first pass, every deployment seen once | 78 s |
+| steady state | 33.5 reconciles/s, every deployment visited every 60 s, work queue empty |
+| API requests, steady state | 33.5/s, all reads of the ConfigMaps |
+| all 2,000 suspended after install | 397 s, against 300 s of `idle-after` plus the first pass |
+| one record on 10 topics, 200 deployments watching | first resume after 10 s, all 200 after 69 s, none without input |
+| memory | 125 MiB after the first pass, 162 MiB at the end |
+
+The same test found the two limits this section used to have. The deployment was read from the API server, not the cache, on every tick, which capped a pass at 20 deployments a second; and controller-runtime's priority queue let deployments requeued by their own ticks run ahead of the ones from the initial list, so at saturation 795 of 2,000 were never visited again and never slept. Both are fixed in 0.5.0.
 
 `make bench` measures the controller's own overhead, not capacity. It comes to about 2 ms per reconcile on an Apple M4 Pro, against a local envtest API server with a fake probe on the quiet path. Add your Kafka and API server round trips to that.
 

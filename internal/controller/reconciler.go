@@ -11,6 +11,7 @@ import (
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/utils/ptr"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -104,9 +105,18 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("siesta").
-		WithOptions(controller.Options{MaxConcurrentReconciles: max(1, r.Concurrency)}).
+		WithOptions(r.controllerOptions()).
 		For(flink.New(), builder.WithPredicates(hasPolicy, relevantChange(r.Prefix))).
 		Complete(r)
+}
+
+// controllerOptions: the workers, and a plain FIFO queue. controller-runtime's default priority
+// queue puts the objects of the initial list behind every requeue; when the controller is
+// saturated, the requeues alone fill it and those objects are never visited (seen at 2,000
+// deployments: 795 never went to sleep). Every deployment here is revisited on a timer, and
+// each one deserves its turn.
+func (r *Reconciler) controllerOptions() controller.Options {
+	return controller.Options{MaxConcurrentReconciles: max(1, r.Concurrency), UsePriorityQueue: ptr.To(false)}
 }
 
 // Reconcile is one tick for one deployment, in the order the ADRs describe it: load what we

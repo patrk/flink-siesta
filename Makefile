@@ -6,7 +6,7 @@ IMAGE ?= siesta:e2e
 KUBE_CONTEXT ?= kind-siesta
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-.PHONY: deps build test it envtest bench soak lint image kind-up kind-deps kind-down e2e e2e-job e2e-load e2e-chaos e2e-soak
+.PHONY: deps build test it envtest bench soak lint image kind-up kind-deps kind-down e2e e2e-job e2e-load e2e-chaos e2e-soak e2e-load-test
 
 deps:
 	go get sigs.k8s.io/controller-runtime@latest k8s.io/apimachinery@latest k8s.io/client-go@latest \
@@ -67,3 +67,9 @@ e2e-chaos: $(E2E_BUILD) e2e-load
 
 e2e-soak: $(E2E_BUILD) e2e-load
 	IMAGE_REPO=siesta IMAGE_TAG=e2e KUBE_CONTEXT=$(KUBE_CONTEXT) FLINK_VERSION=$(FLINK_VERSION) bash e2e/soak.sh
+
+# N deployments with simulated status against one broker, the operator scaled to zero meanwhile.
+LOAD_DEPLOYMENTS ?= 1000
+e2e-load-test: image
+	kind load docker-image $(IMAGE) --name siesta
+	IMAGE_REPO=siesta IMAGE_TAG=e2e KUBE_CONTEXT=$(KUBE_CONTEXT) LOAD_DEPLOYMENTS=$(LOAD_DEPLOYMENTS) bash e2e/load.sh
