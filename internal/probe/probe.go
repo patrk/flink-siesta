@@ -62,3 +62,11 @@ var ErrNoCommit = errors.New("no committed offset")
 type LagProbe interface {
 	Lag(ctx context.Context, group string, ends map[string][]int64) (pending int64, err error)
 }
+
+// GapProbe is optional: it says whether a partition holds a record a consumer would be given at
+// an offset in [from, to). With transactional producers the end offset counts commit markers,
+// which no consumer is given, so a reader at its last record can be short of the end. An error
+// means it could not be told, which the job gate reads as records pending.
+type GapProbe interface {
+	Records(ctx context.Context, topic string, partition int32, from, to int64) (bool, error)
+}

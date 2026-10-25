@@ -165,14 +165,32 @@ func (r *REST) metricNames(ctx context.Context, base, jobID, vertex string) ([]s
 	return ids, nil
 }
 
+// maxRequestURI keeps the path and query of one request well inside the 4096-byte request
+// line Flink's REST server accepts. Past it Flink answers 404, not 414, so a source reading a
+// few dozen partitions would look like a job without metrics.
+const maxRequestURI = 3500
+
 func (r *REST) aggregated(ctx context.Context, base, jobID, vertex string, ids []string) ([]aggregate, error) {
-	q := url.Values{"get": {strings.Join(ids, ",")}}
+	path := "/jobs/" + jobID + "/vertices/" + vertex + "/subtasks/metrics"
 	var agg []aggregate
-	if err := r.get(ctx, base+"/jobs/"+jobID+"/vertices/"+vertex+"/subtasks/metrics?"+q.Encode(), &agg); err != nil {
-		return nil, err
+	for len(ids) > 0 {
+		n, size := 0, len(path)+len("?get=")
+		for n < len(ids) {
+			grow := len(url.QueryEscape(ids[n])) + len("%2C")
+			if n > 0 && size+grow > maxRequestURI {
+				break
+			}
+			size, n = size+grow, n+1
+		}
+		var part []aggregate
+		q := url.Values{"get": {strings.Join(ids[:n], ",")}}
+		if err := r.get(ctx, base+path+"?"+q.Encode(), &part); err != nil {
+			return nil, err
+		}
+		agg, ids = append(agg, part...), ids[n:]
 	}
 	if len(agg) == 0 {
-		return nil, fmt.Errorf("vertex %s returned no values for %s", vertex, strings.Join(ids, ","))
+		return nil, fmt.Errorf("vertex %s returned no metric values", vertex)
 	}
 	return agg, nil
 }
@@ -188,7 +206,8 @@ func (r *REST) get(ctx context.Context, u string, into any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET %s: %s", u, resp.Status)
+		// Without the query: a metrics read lists every id it asked for.
+		return fmt.Errorf("GET %s://%s%s: %s", req.URL.Scheme, req.URL.Host, req.URL.Path, resp.Status)
 	}
 	return json.NewDecoder(resp.Body).Decode(into)
 }

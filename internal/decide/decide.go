@@ -107,6 +107,8 @@ type Observation struct {
 	// Why says why the snapshot is unknown when the observer knows better than "unavailable",
 	// for example sources: auto before the job has run once.
 	Why string
+	// Unlearned: sources: auto has no topics to watch, so nothing was asked.
+	Unlearned bool
 }
 
 // JobReading is what the running job's REST API reports about its Kafka sources.
@@ -117,6 +119,10 @@ type JobReading struct {
 	// IdleFor is the smallest sourceIdleTime over the source vertices: 0 while any source emits,
 	// counting since the last emitted record otherwise, including for a source that never had one.
 	IdleFor time.Duration
+	// Drained marks the partitions whose offsets after the last emitted record, up to this
+	// tick's end offset, hold nothing a consumer is given: transaction markers, aborted records,
+	// compacted-away offsets. The broker says so; the job cannot.
+	Drained map[string]map[int]bool
 }
 
 // InitialOffset is the currentOffset gauge's value before the reader has emitted a record.
@@ -179,6 +185,23 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, obs Obser
 	}
 	prev.Generation = live.Generation
 
+	// sources: auto with nothing learned, on a job we put to sleep: its memory was lost, and
+	// the job that could say what it reads is not running. Left asleep it would never wake. A
+	// job resuming from group offsets is not woken blind: whether they still exist is asked
+	// per topic, and there are none to ask about.
+	if obs.Unlearned && prev.Phase == state.Suspended && live.SpecJobState == "suspended" && p.Mode == policy.ModeAuto {
+		switch {
+		case !live.suspended():
+			return Decision{Action: None, Next: prev, Reason: ReasonOperatorSuspends}
+		case live.ResumesFromGroup(p):
+			next := prev
+			next.Reason = ReasonRelearnHeld
+			return Decision{Action: None, Next: next, Reason: next.Reason, Held: "sources-unknown"}
+		}
+		next := wake(prev, now, ReasonRelearn)
+		next.ResumedAt = now
+		return Decision{Action: Resume, Next: next, Reason: ReasonRelearn}
+	}
 	if !obs.Known {
 		if obs.Why != "" {
 			// A named reason is a lasting situation, not a transient failure: it goes on the object.
@@ -276,7 +299,10 @@ func (d *Decider) Decide(p policy.Policy, prev state.State, live Live, obs Obser
 		} else if cur.RestartingSince.IsZero() {
 			cur.RestartingSince = now
 		}
-		if r := d.unrecoverable(live); r != "" {
+		// Unrecoverable means "never restart", so it is judged only where a restart could happen:
+		// with restart on, and on a job that is not running fine. The operator can leave an old
+		// error in status after the job recovered.
+		if r := d.unrecoverable(live); r != "" && p.Restart && !live.stable() {
 			cur.Phase, cur.Reason = state.Unrecoverable, r
 			return Decision{Action: MarkUnrecoverable, Next: cur, Reason: r}
 		}

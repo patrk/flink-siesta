@@ -3,6 +3,7 @@ package flink
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -28,6 +29,12 @@ func newJM(t *testing.T, names []string, values map[string]float64) (*REST, *jm)
 	})
 	mux.HandleFunc("/jobs/abc/vertices/src/subtasks/metrics", func(w http.ResponseWriter, r *http.Request) {
 		f.calls++
+		// Flink's REST server refuses a request line over 4096 bytes, and answers 404 (measured
+		// on a Flink 2.2 JobManager). The request line is "GET <uri> HTTP/1.1".
+		if len("GET "+r.RequestURI+" HTTP/1.1") > 4096 {
+			http.NotFound(w, r)
+			return
+		}
 		if get := r.URL.Query().Get("get"); get != "" {
 			ids := strings.Split(get, ",")
 			out := make([]map[string]any, 0, len(ids))
@@ -147,5 +154,30 @@ func TestSourcesUnreachableIsAnError(t *testing.T) {
 func TestDefaultURLIsTheOperatorsRestService(t *testing.T) {
 	if got := NewREST(8081).URL("flink", "orders"); got != "http://orders-rest.flink.svc:8081" {
 		t.Fatalf("url = %s", got)
+	}
+}
+
+// A source reading hundreds of partitions has more metric ids than fit in one request line:
+// the read is split across as many requests as it takes.
+func TestReadOfAWideSourceIsSplitToFitTheRequestLine(t *testing.T) {
+	names := make([]string, 0, 301)
+	names = append(names, "Source__Kafka_Source.sourceIdleTime")
+	values := map[string]float64{"Source__Kafka_Source.sourceIdleTime": 1000}
+	for p := range 300 {
+		id := fmt.Sprintf("Source__Kafka_Source.KafkaSourceReader.topic.orders.partition.%d.currentOffset", p)
+		names = append(names, id)
+		values[id] = float64(p)
+	}
+	r, f := newJM(t, names, values)
+	before := f.calls
+	got, err := r.Read(context.Background(), "ns", "job", "abc", Sources{Vertices: []string{"src"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Offsets["orders"]) != 300 || got.Offsets["orders"][299] != 299 || got.IdleFor != time.Second {
+		t.Fatalf("every partition must be read, got %d offsets, idle %s", len(got.Offsets["orders"]), got.IdleFor)
+	}
+	if calls := f.calls - before; calls < 3 || calls > 12 {
+		t.Fatalf("300 partitions should take a listing and a handful of reads, took %d calls", calls)
 	}
 }

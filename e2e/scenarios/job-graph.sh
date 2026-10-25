@@ -26,4 +26,12 @@ i=0; until reason | grep -q 'job busy'; do
 echo "held by: $(reason)"
 wait_for '{.spec.job.state}' suspended 480
 wait_for '{.status.lifecycleState}' SUSPENDED 180
+
+echo "transactional input: the commit marker takes an offset the job never emits, and the job gate must still let it sleep"
+produce_txn 5
+wait_for '{.spec.job.state}' running 120
+wait_for '{.status.jobStatus.state}' RUNNING 300
+i=0; until [ "$(k -n $ns get flinkdeployment example -o jsonpath='{.spec.job.state}')" = suspended ]; do
+  i=$((i+10)); [ $i -ge 600 ] && { echo "a job caught up on transactional input must sleep; reason is: $(reason)"; exit 1; }; sleep 10; done
+echo "slept after transactional input, last reason: $(reason)"
 scenario_end job-graph

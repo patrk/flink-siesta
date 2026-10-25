@@ -14,8 +14,9 @@ import (
 
 // Kafka reads log end offsets with one admin request per Observe.
 type Kafka struct {
-	cl  *kgo.Client
-	adm *kadm.Client
+	cl   *kgo.Client
+	adm  *kadm.Client
+	gaps gaps
 }
 
 // NewKafka takes ready-made client options; KafkaConfig.Opts builds them from configuration.

@@ -10,6 +10,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -19,6 +20,7 @@ import (
 	"github.com/patrk/flink-siesta/internal/metrics"
 	"github.com/patrk/flink-siesta/internal/probe"
 	"github.com/patrk/flink-siesta/internal/state"
+	"github.com/patrk/flink-siesta/internal/store"
 )
 
 // The tests in this file were written from a traceability audit of the README against the
@@ -430,6 +432,25 @@ func TestSourcesAutoLearnsFromTheJobAndWakesFromMemory(t *testing.T) {
 	if s := specJobState(t, c, key); s != "running" {
 		t.Fatal("input on a remembered source must resume the job")
 	}
+
+	// Asleep again, and the memory is lost: nothing says what to watch, and the job that could
+	// say it is not running. It is woken to be asked again, not left asleep for good.
+	setStatus(t, c, fd, map[string]any{"lifecycleState": "STABLE", "jobStatus": map[string]any{"state": "RUNNING", "jobId": "j1"}})
+	now = now.Add(2 * time.Hour)
+	tick()
+	if s := specJobState(t, c, key); s != "suspended" {
+		t.Fatal("expected a second suspend")
+	}
+	setStatus(t, c, fd, map[string]any{"lifecycleState": "SUSPENDED", "jobStatus": map[string]any{"state": "FINISHED", "jobId": "j1"}})
+	if err := c.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: store.Name("auto")}}); err != nil {
+		t.Fatal(err)
+	}
+	r.memo = memo{} // lost with the ConfigMap when the controller restarts too
+	now = now.Add(time.Minute)
+	tick()
+	if s := specJobState(t, c, key); s != "running" {
+		t.Fatalf("a job asleep with its learned sources lost must be woken to learn them again, events %v", rec.reasons)
+	}
 }
 
 // sources: auto needs the job's REST API; with it switched off the policy is invalid.
@@ -504,5 +525,33 @@ func TestRemovingThePolicyWakesAJobItSuspended(t *testing.T) {
 	}
 	if _, has := fd.GetAnnotations()["siesta.flink.io/state"]; has || rec.count("Released") != 1 {
 		t.Fatalf("the release must still clear our state, annotations %v, events %v", fd.GetAnnotations(), rec.reasons)
+	}
+}
+
+// A tick that read the object from a stale cache, right after our own suspend, sees spec
+// running and our old state annotation. Its annotation-only write conflicts; the retry must
+// not write state=active over a spec that by now says suspended, or every later tick would
+// call the job suspended outside siesta and never wake it.
+func TestAnAnnotationWriteFromAStaleReadIsNotRetriedOverAChangedSpec(t *testing.T) {
+	c := startEnv(t)
+	ctx := context.Background()
+	stale := createDeployment(t, c, "stale-read", "savepoint")
+	fresh := mustGet(t, c, client.ObjectKeyFromObject(stale))
+	_ = unstructured.SetNestedField(fresh.Object, "suspended", "spec", "job", "state")
+	ann := fresh.GetAnnotations()
+	ann["siesta.flink.io/state"] = "suspended"
+	fresh.SetAnnotations(ann)
+	if err := c.Update(ctx, fresh); err != nil {
+		t.Fatal(err)
+	}
+
+	p := patcher{Client: c, Reader: c, Prefix: "siesta.flink.io"}
+	next := state.Initial(t0)
+	next.Reason = "memory repaired from object"
+	if err := p.annotate(ctx, stale, next); err == nil || !strings.Contains(err.Error(), "spec.job.state changed") {
+		t.Fatalf("the retry must give up when spec.job.state moved since the read, got %v", err)
+	}
+	if got := mustGet(t, c, client.ObjectKeyFromObject(stale)).GetAnnotations()["siesta.flink.io/state"]; got != "suspended" {
+		t.Fatalf("state annotation must be left as the suspend wrote it, got %q", got)
 	}
 }

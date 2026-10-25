@@ -29,6 +29,9 @@ func TestJobGate(t *testing.T) {
 		{"job reads none of the declared topic", ends(10), reading(map[string]map[int]int64{"u": {0: 9}}, time.Hour), JobUnknown, "no offsets for t"},
 		{"job lacks a partition", ends(10, 10), reading(map[string]map[int]int64{"t": {0: 9}}, time.Hour), JobUnknown, "partition 1"},
 		{"broker lacks a partition", ends(10, -1), reading(map[string]map[int]int64{"t": {0: 9, 1: 9}}, time.Hour), JobUnknown, "no end offset"},
+		{"a commit marker after the last record, unconfirmed", ends(11), reading(map[string]map[int]int64{"t": {0: 9}}, time.Hour), JobBusy, "1 records pending"},
+		{"a commit marker after the last record, confirmed by the broker", ends(11), JobReading{Offsets: map[string]map[int]int64{"t": {0: 9}}, IdleFor: time.Hour, Drained: map[string]map[int]bool{"t": {0: true}}}, JobIdle, ""},
+		{"confirmed drained, but emitted recently", ends(11), JobReading{Offsets: map[string]map[int]int64{"t": {0: 9}}, IdleFor: time.Second, Drained: map[string]map[int]bool{"t": {0: true}}}, JobBusy, "emitted a record"},
 		{"emitted past the snapshot is not negative", ends(10), reading(map[string]map[int]int64{"t": {0: 12}}, time.Hour), JobIdle, ""},
 	}
 	for _, c := range cases {

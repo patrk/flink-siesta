@@ -172,33 +172,55 @@ func TestReconcileSuspendsIdleAndResumesOnInput(t *testing.T) {
 	}
 }
 
+// Dry-run, for every deployment with --dry-run or for one with its annotation, records what
+// would happen and never patches the spec. The annotation leaves the other deployments live.
 func TestDryRunRecordsButNeverPatches(t *testing.T) {
 	c := startEnv(t)
 	ctx := context.Background()
-	fd := createDeployment(t, c, "shadow", "savepoint")
-	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
-	offsets := map[string]string{"in-0": "5"}
-	r := newReconciler(c, &now, probe.Func(func(context.Context, []string) (map[string]string, error) { return offsets, nil }))
-	r.DryRun = true
-	key := types.NamespacedName{Name: "shadow", Namespace: "default"}
-	req := reconcileRequest(key)
+	for _, perDeployment := range []bool{false, true} {
+		name := map[bool]string{false: "shadow", true: "shadow-one"}[perDeployment]
+		fd := createDeployment(t, c, name, "savepoint")
+		live := createDeployment(t, c, name+"-live", "savepoint")
+		if perDeployment {
+			ann := fd.GetAnnotations()
+			ann["siesta.flink.io/dry-run"] = "true"
+			fd.SetAnnotations(ann)
+			if err := c.Update(ctx, fd); err != nil {
+				t.Fatal(err)
+			}
+		}
+		now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+		offsets := map[string]string{"in-0": "5"}
+		r := newReconciler(c, &now, probe.Func(func(context.Context, []string) (map[string]string, error) { return offsets, nil }))
+		r.DryRun = !perDeployment
+		key := types.NamespacedName{Name: name, Namespace: "default"}
+		liveKey := client.ObjectKeyFromObject(live)
+		tick := func() {
+			t.Helper()
+			for _, k := range []types.NamespacedName{key, liveKey} {
+				if _, err := r.Reconcile(ctx, reconcileRequest(k)); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
 
-	if _, err := r.Reconcile(ctx, req); err != nil {
-		t.Fatal(err)
-	}
-	now = now.Add(2 * time.Hour)
-	if _, err := r.Reconcile(ctx, req); err != nil {
-		t.Fatal(err)
-	}
-	if got := specJobState(t, c, key); got != "running" {
-		t.Fatalf("dry-run must never patch spec, got %q", got)
-	}
-	if err := c.Get(ctx, key, fd); err != nil {
-		t.Fatal(err)
-	}
-	ann := fd.GetAnnotations()
-	if ann["siesta.flink.io/state"] != "active" || !strings.Contains(ann["siesta.flink.io/reason"], "dry-run: would suspend") {
-		t.Fatalf("dry-run must keep the real state and say what it would do, got %v", ann)
+		tick()
+		now = now.Add(2 * time.Hour)
+		tick()
+		if got := specJobState(t, c, key); got != "running" {
+			t.Fatalf("dry-run must never patch spec, got %q", got)
+		}
+		if err := c.Get(ctx, key, fd); err != nil {
+			t.Fatal(err)
+		}
+		ann := fd.GetAnnotations()
+		if ann["siesta.flink.io/state"] != "active" || !strings.Contains(ann["siesta.flink.io/reason"], "dry-run: would suspend") {
+			t.Fatalf("dry-run must keep the real state and say what it would do, got %v", ann)
+		}
+		want := map[bool]string{false: "running", true: "suspended"}[perDeployment]
+		if got := specJobState(t, c, liveKey); got != want {
+			t.Fatalf("per-deployment dry-run %v: the deployment without it must be %s, got %q", perDeployment, want, got)
+		}
 	}
 }
 

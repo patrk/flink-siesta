@@ -34,6 +34,14 @@ func TestReadReportsProblemsInsteadOfDefaultingSilently(t *testing.T) {
 		{"negative min-awake", map[string]string{p + "/mode": "auto", p + "/sources": "t", p + "/min-awake": "-5m"}, true, 1, 14 * 24 * time.Hour},
 		{"zero min-awake", map[string]string{p + "/mode": "auto", p + "/sources": "t", p + "/min-awake": "0"}, true, 0, 14 * 24 * time.Hour},
 		{"negative max-sleep", map[string]string{p + "/mode": "auto", p + "/sources": "t", p + "/max-sleep": "-1d"}, true, 1, 14 * 24 * time.Hour},
+		{"days and hours", map[string]string{p + "/mode": "auto", p + "/sources": "t", p + "/idle-after": "1d12h"}, true, 0, 36 * time.Hour},
+		{"fractional days", map[string]string{p + "/mode": "auto", p + "/sources": "t", p + "/idle-after": "1.5d"}, true, 0, 36 * time.Hour},
+		{"days, hours and minutes", map[string]string{p + "/mode": "auto", p + "/sources": "t", p + "/idle-after": "2d3h30m"}, true, 0, 51*time.Hour + 30*time.Minute},
+		{"days after hours", map[string]string{p + "/mode": "auto", p + "/sources": "t", p + "/idle-after": "12h1d"}, true, 1, 14 * 24 * time.Hour},
+		{"negative days and hours", map[string]string{p + "/mode": "auto", p + "/sources": "t", p + "/idle-after": "-1d12h"}, true, 1, 14 * 24 * time.Hour},
+		{"days alone are not a unit", map[string]string{p + "/mode": "auto", p + "/sources": "t", p + "/idle-after": "d"}, true, 1, 14 * 24 * time.Hour},
+		{"dry-run", map[string]string{p + "/mode": "auto", p + "/sources": "t", p + "/dry-run": "true"}, true, 0, 14 * 24 * time.Hour},
+		{"bad dry-run", map[string]string{p + "/mode": "auto", p + "/sources": "t", p + "/dry-run": "maybe"}, true, 1, 14 * 24 * time.Hour},
 		{"bootstrap-servers is reserved", map[string]string{p + "/mode": "auto", p + "/sources": "t", p + "/bootstrap-servers": "b:9092"}, true, 1, 14 * 24 * time.Hour},
 	}
 	for _, c := range cases {
@@ -55,5 +63,18 @@ func TestMaxSleep(t *testing.T) {
 	base[p+"/max-sleep"] = "0"
 	if pol, _ := Read(p, base); pol.MaxSleep != 0 || len(pol.Problems) != 0 {
 		t.Fatalf("0 switches max-sleep off, got %v %v", pol.MaxSleep, pol.Problems)
+	}
+}
+
+func TestDryRunPerDeployment(t *testing.T) {
+	const p = "siesta.flink.io"
+	for raw, want := range map[string]bool{"": false, "true": true, "TRUE": true, "false": false} {
+		ann := map[string]string{p + "/mode": "auto", p + "/sources": "t"}
+		if raw != "" {
+			ann[p+"/dry-run"] = raw
+		}
+		if pol, _ := Read(p, ann); pol.DryRun != want || len(pol.Problems) != 0 {
+			t.Fatalf("dry-run %q: want %v, got %v %v", raw, want, pol.DryRun, pol.Problems)
+		}
 	}
 }
