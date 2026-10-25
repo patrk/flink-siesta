@@ -3,7 +3,7 @@ module github.com/patrk/flink-siesta
 go 1.27
 
 require (
-	github.com/go-logr/logr v1.4.3
+	github.com/go-logr/logr v1.4.4
 	github.com/moby/moby/api v1.55.0
 	github.com/prometheus/client_golang v1.24.0
 	github.com/testcontainers/testcontainers-go v0.44.0
