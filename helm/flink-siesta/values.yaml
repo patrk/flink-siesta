@@ -19,6 +19,14 @@ config:
   dryRun: false
   pollInterval: 1m
   probeTimeout: 10s
+  # Deployments reconciled at once. A tick mostly waits on Kafka and the job's REST API, so
+  # one worker per hundred or so deployments keeps a pass inside pollInterval.
+  maxConcurrentReconciles: 4
+  # Client-side rate limit towards the Kubernetes API. A quiet tick costs one request, a
+  # transition three or four.
+  kubeAPI:
+    qps: 20
+    burst: 30
   # Ask each running job's REST API (<deployment>-rest:8081) to verify the sources annotation
   # against its graph and, with the idle: job annotation, whether the job objects to sleeping.
   # Needs egress from the controller to the JobManager pods on that port.

@@ -61,6 +61,9 @@ spec:
             - --dry-run={{ .Values.config.dryRun }}
             - --poll-interval={{ .Values.config.pollInterval }}
             - --probe-timeout={{ .Values.config.probeTimeout }}
+            - --max-concurrent-reconciles={{ .Values.config.maxConcurrentReconciles }}
+            - --kube-api-qps={{ .Values.config.kubeAPI.qps }}
+            - --kube-api-burst={{ .Values.config.kubeAPI.burst }}
             - --restart-max={{ .Values.config.restart.maxRestarts }}
             - --restart-window={{ .Values.config.restart.window }}
             - --failing-after={{ .Values.config.restart.failingAfter }}

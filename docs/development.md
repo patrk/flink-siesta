@@ -41,9 +41,13 @@ To get going:
 
 ## Scale
 
-One reconcile is one cached read of the deployment, one read of its ConfigMap, one or two Kafka admin calls, and a write only when something changed. Every deployment is visited once a minute. Tens to low hundreds of deployments per namespace run on the default single worker with plenty of headroom. Around a thousand, raise `MaxConcurrentReconciles` and the client rate limit, or batch the Kafka calls per tick.
+One reconcile is one cached read of the deployment, one uncached read of its ConfigMap, one Kafka admin call for the end offsets plus one for the group's committed offsets when `consumer-group` is set, and a write only when something changed. The save compares against the ConfigMap the tick loaded instead of reading it again. Every deployment is visited once per `--poll-interval`.
 
-`make bench` measures the controller's own overhead, not capacity. It comes to about 2 ms per reconcile on an Apple M4 Pro, against a local envtest API server with a fake probe on the quiet path. Add your Kafka and API server round trips to that. With 10 ms to Kafka and 5 ms to the API server, one worker handles a few thousand deployments per minute, which is far beyond the population this is built for.
+A tick mostly waits: on the broker, on the job's REST API with `idle: job` or `sources: auto`, and on the API server. `--max-concurrent-reconciles` (default 4) sets how many deployments wait at once; one deployment is never reconciled twice at once. Size it so a pass fits in the poll interval: with ticks of 50 ms, 4 workers visit about 4,800 deployments a minute. The worst case is a broker that swallows connections, where every tick waits out `--probe-timeout` on Kafka: 1,300 deployments, 10 s each and 4 workers take about 54 minutes a pass, against 3.6 hours on one worker. Nothing acts on an unknown reading, so a slow pass delays decisions and never makes a wrong one. For a large fleet, raise the workers to 16 or 32 and lower `--probe-timeout`.
+
+The Kubernetes client is rate limited to `--kube-api-qps` 20 and `--kube-api-burst` 30. A quiet tick costs one request and a transition three or four, so the default carries about a thousand quiet deployments a minute with room for transitions. Raise both with the workers. The Kafka calls are not batched across deployments: at 1,300 deployments with a consumer group that is about 45 admin requests a second, well inside what a broker serves.
+
+`make bench` measures the controller's own overhead, not capacity. It comes to about 2 ms per reconcile on an Apple M4 Pro, against a local envtest API server with a fake probe on the quiet path. Add your Kafka and API server round trips to that.
 
 Horizontal scale is per namespace: one instance, one Kafka cluster, one credential. Replicas exist for failover, not throughput. Leader election keeps one active.
 

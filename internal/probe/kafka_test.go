@@ -67,12 +67,19 @@ func TestKafkaEndOffsets(t *testing.T) {
 		t.Fatal("missing topic must be unknown, not zero")
 	}
 
+	lag := func() (int64, error) {
+		o, err := p.Observe(ctx, []string{"in"})
+		if err != nil {
+			return 0, err
+		}
+		return p.Lag(ctx, "g", o.Ends)
+	}
 	// Lag: a group that never committed is unknown, not "caught up". A fresh broker answers
 	// COORDINATOR_NOT_AVAILABLE for a few seconds first, which is unknown for another reason.
-	_, err = p.Lag(ctx, "g", []string{"in"})
+	_, err = lag()
 	for deadline := time.Now().Add(time.Minute); err != nil && !errors.Is(err, ErrNoCommit) && time.Now().Before(deadline); {
 		time.Sleep(time.Second)
-		_, err = p.Lag(ctx, "g", []string{"in"})
+		_, err = lag()
 	}
 	if !errors.Is(err, ErrNoCommit) {
 		t.Fatalf("group without commits must be unknown, and say it has no commit: %v", err)
@@ -83,7 +90,7 @@ func TestKafkaEndOffsets(t *testing.T) {
 	if _, err := adm.CommitOffsets(ctx, "g", partial); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.Lag(ctx, "g", []string{"in"}); !errors.Is(err, ErrNoCommit) {
+	if _, err := lag(); !errors.Is(err, ErrNoCommit) {
 		t.Fatalf("a partition the group never committed must make lag unknown, and say so: %v", err)
 	}
 	var committed kadm.Offsets
@@ -92,13 +99,13 @@ func TestKafkaEndOffsets(t *testing.T) {
 	if _, err := adm.CommitOffsets(ctx, "g", committed); err != nil {
 		t.Fatal(err)
 	}
-	if pending, err := p.Lag(ctx, "g", []string{"in"}); err != nil || pending != 0 {
+	if pending, err := lag(); err != nil || pending != 0 {
 		t.Fatalf("want caught up (0, nil), got (%d, %v)", pending, err)
 	}
 	if err := cl.ProduceSync(ctx, &kgo.Record{Topic: "in", Partition: 1, Value: []byte("v")}).FirstErr(); err != nil {
 		t.Fatal(err)
 	}
-	if pending, err := p.Lag(ctx, "g", []string{"in"}); err != nil || pending != 1 {
+	if pending, err := lag(); err != nil || pending != 1 {
 		t.Fatalf("want one pending record, got (%d, %v)", pending, err)
 	}
 
@@ -106,7 +113,7 @@ func TestKafkaEndOffsets(t *testing.T) {
 	if _, err := adm.DeleteOffsets(ctx, "g", kadm.TopicsSet{"in": {0: {}, 1: {}}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.Lag(ctx, "g", []string{"in"}); !errors.Is(err, ErrNoCommit) {
+	if _, err := lag(); !errors.Is(err, ErrNoCommit) {
 		t.Fatalf("deleted offsets must read as no commit, got %v", err)
 	}
 }

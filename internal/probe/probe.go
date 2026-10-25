@@ -56,8 +56,9 @@ func Ends(snapshot map[string]string) map[string][]int64 {
 var ErrNoCommit = errors.New("no committed offset")
 
 // LagProbe is optional: a source that has a notion of "consumed up to" can report how much
-// is still pending for a consumer. An error means it could not be measured, which, like an
-// unknown snapshot, must never be read as "nothing pending".
+// is still pending for a consumer, measured against the end offsets Observe just read. An
+// error means it could not be measured, which, like an unknown snapshot, must never be read
+// as "nothing pending".
 type LagProbe interface {
-	Lag(ctx context.Context, group string, sources []string) (pending int64, err error)
+	Lag(ctx context.Context, group string, ends map[string][]int64) (pending int64, err error)
 }
