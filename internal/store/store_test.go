@@ -143,3 +143,68 @@ func TestStoreIgnoresAndReplacesStateOfAPreviousDeploymentWithTheSameName(t *tes
 		t.Fatalf("the ConfigMap must now belong to the new deployment with fresh state, got owner=%v state=%q", cm.OwnerReferences, cm.Data["state"])
 	}
 }
+
+// countingReader counts the uncached reads, which cost an API server round trip each.
+type countingReader struct {
+	client.Reader
+	gets int
+}
+
+func (r *countingReader) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	r.gets++
+	return r.Reader.Get(ctx, key, obj, opts...)
+}
+
+// A tick loads the memory and then saves it: with Seen, the save writes from what the load
+// read instead of reading the ConfigMap a second time, and still recreates one deleted since.
+func TestStoreSavesFromWhatTheTickLoaded(t *testing.T) {
+	base := fake.NewClientBuilder().WithScheme(scheme.Scheme).Build()
+	cc := &countingClient{Client: base}
+	cr := &countingReader{Reader: base}
+	s := Store{Client: cc, Reader: cr, Prefix: "siesta.flink.io", Seen: &Seen{}}
+	ctx := context.Background()
+	fd := flink.New()
+	fd.SetNamespace("ns")
+	fd.SetName("job")
+	fd.SetUID("uid-3")
+	st := state.Initial(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err := s.Save(ctx, fd, st); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := range 3 {
+		cr.gets = 0
+		got, ok, err := s.Load(ctx, fd)
+		if err != nil || !ok {
+			t.Fatalf("load: ok=%v err=%v", ok, err)
+		}
+		got.Reason = "tick " + string(rune('a'+i))
+		if err := s.Save(ctx, fd, got); err != nil {
+			t.Fatal(err)
+		}
+		if cr.gets != 1 {
+			t.Fatalf("a tick must read its ConfigMap once, read it %d times", cr.gets)
+		}
+	}
+	var cm corev1.ConfigMap
+	if err := base.Get(ctx, types.NamespacedName{Namespace: "ns", Name: "siesta-job"}, &cm); err != nil {
+		t.Fatal(err)
+	}
+	if cm.Data["reason"] != "tick c" {
+		t.Fatalf("the last save must be written, reason %q", cm.Data["reason"])
+	}
+
+	if _, _, err := s.Load(ctx, fd); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.Delete(ctx, &cm); err != nil {
+		t.Fatal(err)
+	}
+	st.Reason = "after deletion"
+	if err := s.Save(ctx, fd, st); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.Get(ctx, types.NamespacedName{Namespace: "ns", Name: "siesta-job"}, &cm); err != nil || cm.Data["reason"] != "after deletion" {
+		t.Fatalf("a ConfigMap deleted after the load must be recreated, err=%v data=%v", err, cm.Data)
+	}
+}

@@ -42,7 +42,8 @@ func main() {
 type config struct {
 	prefix, namespace, brokers, metricsAddr, probeAddr, unrecoverable string
 	dryRun, leaderElect, flinkRest                                    bool
-	flinkRestPort, maxRestarts                                        int
+	flinkRestPort, maxRestarts, concurrency, apiBurst                 int
+	apiQPS                                                            float64
 	restartWindow, restartBackoff, pollInterval, probeTimeout         time.Duration
 	stallAfter, failingAfter                                          time.Duration
 }
@@ -59,6 +60,9 @@ func parseFlags() config {
 	flag.IntVar(&c.maxRestarts, "restart-max", 3, "restarts allowed per window")
 	flag.DurationVar(&c.restartWindow, "restart-window", 30*time.Minute, "restart budget window")
 	flag.DurationVar(&c.restartBackoff, "restart-backoff", time.Minute, "first restart backoff; doubles each time within the window")
+	flag.IntVar(&c.concurrency, "max-concurrent-reconciles", 4, "deployments reconciled at once; raise it with the number of deployments (a tick mostly waits on Kafka and the job)")
+	flag.Float64Var(&c.apiQPS, "kube-api-qps", 20, "sustained requests per second to the Kubernetes API")
+	flag.IntVar(&c.apiBurst, "kube-api-burst", 30, "burst of requests to the Kubernetes API above kube-api-qps")
 	flag.DurationVar(&c.pollInterval, "poll-interval", time.Minute, "how often each deployment is revisited")
 	flag.DurationVar(&c.probeTimeout, "probe-timeout", 10*time.Second, "bound for the probes of one tick: the Kafka reads (offsets, lag) and each call to the job's REST API get this long each")
 	flag.DurationVar(&c.stallAfter, "resume-stall-after", 10*time.Minute, "warn once if a resumed job is not RUNNING after this")
@@ -90,7 +94,9 @@ func run() error {
 	if cfg.namespace != "" {
 		opts.Cache = cache.Options{DefaultNamespaces: map[string]cache.Config{cfg.namespace: {}}}
 	}
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), opts)
+	restCfg := ctrl.GetConfigOrDie()
+	restCfg.QPS, restCfg.Burst = float32(cfg.apiQPS), cfg.apiBurst
+	mgr, err := ctrl.NewManager(restCfg, opts)
 	if err != nil {
 		return fmt.Errorf("manager: %w", err)
 	}
@@ -116,11 +122,12 @@ func run() error {
 		Probe:            kafkaProbe,
 		Lag:              kafkaProbe,
 		Recorder:         mgr.GetEventRecorder("siesta"),
-		Store:            store.Store{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Prefix: cfg.prefix},
+		Store:            store.Store{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Prefix: cfg.prefix, Seen: &store.Seen{}},
 		Now:              time.Now,
 		PollInterval:     cfg.pollInterval,
 		ProbeTimeout:     cfg.probeTimeout,
 		ResumeStallAfter: cfg.stallAfter,
+		Concurrency:      cfg.concurrency,
 		Decider: decide.New(decide.RestartPolicy{
 			MaxRestarts:   cfg.maxRestarts,
 			Window:        cfg.restartWindow,
@@ -140,6 +147,6 @@ func run() error {
 	_ = mgr.AddHealthzCheck("healthz", healthz.Ping)
 	_ = mgr.AddReadyzCheck("readyz", healthz.Ping)
 
-	log.Info("starting", "prefix", cfg.prefix, "namespace", cfg.namespace, "dryRun", cfg.dryRun)
+	log.Info("starting", "prefix", cfg.prefix, "namespace", cfg.namespace, "dryRun", cfg.dryRun, "concurrency", cfg.concurrency)
 	return mgr.Start(ctrl.SetupSignalHandler())
 }

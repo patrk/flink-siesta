@@ -14,7 +14,7 @@ import (
 // lagFunc adapts a function to probe.LagProbe.
 type lagFunc func() (int64, error)
 
-func (f lagFunc) Lag(context.Context, string, []string) (int64, error) { return f() }
+func (f lagFunc) Lag(context.Context, string, map[string][]int64) (int64, error) { return f() }
 
 // ADR 15 end to end on the API server: a stateless job resuming from group offsets sleeps when
 // caught up, and a resume whose group lost its offsets is held with one ResumeHeld event until

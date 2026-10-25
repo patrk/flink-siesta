@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"sync"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -24,6 +25,44 @@ type Store struct {
 	Client client.Client // writes
 	Reader client.Reader // uncached reads: we do not want an informer on ConfigMaps
 	Prefix string
+	// Seen, when set, remembers the ConfigMap each Load returned, so the Save of the same tick
+	// writes from it instead of reading it again. Without it every Save reads first.
+	Seen *Seen
+}
+
+// Seen is the last ConfigMap read or written per deployment, shared by concurrent reconciles.
+type Seen struct{ m sync.Map }
+
+func (s *Seen) get(key types.NamespacedName) (*corev1.ConfigMap, bool) {
+	if s == nil {
+		return nil, false
+	}
+	cm, ok := s.m.Load(key)
+	if !ok {
+		return nil, false
+	}
+	return cm.(*corev1.ConfigMap), true
+}
+
+func (s *Seen) put(cm *corev1.ConfigMap) {
+	if s != nil {
+		s.m.Store(client.ObjectKeyFromObject(cm), cm.DeepCopy())
+	}
+}
+
+func (s *Seen) drop(key types.NamespacedName) {
+	if s != nil {
+		s.m.Delete(key)
+	}
+}
+
+// Forget drops what Seen holds for a deployment that is gone.
+func (s Store) Forget(namespace, deployment string) {
+	s.Seen.drop(types.NamespacedName{Namespace: namespace, Name: Name(deployment)})
+}
+
+func key(fd *unstructured.Unstructured) types.NamespacedName {
+	return types.NamespacedName{Namespace: fd.GetNamespace(), Name: Name(fd.GetName())}
 }
 
 // Name of the ConfigMap that holds a deployment's state.
@@ -32,9 +71,10 @@ func Name(deployment string) string { return "siesta-" + deployment }
 // Load returns the state and whether any was found.
 func (s Store) Load(ctx context.Context, fd *unstructured.Unstructured) (state.State, bool, error) {
 	var cm corev1.ConfigMap
-	err := s.Reader.Get(ctx, types.NamespacedName{Namespace: fd.GetNamespace(), Name: Name(fd.GetName())}, &cm)
+	err := s.Reader.Get(ctx, key(fd), &cm)
 	switch {
 	case err == nil:
+		s.Seen.put(&cm)
 		if !ownedBy(&cm, fd) {
 			// Left by a previous deployment of the same name, not yet garbage-collected. Its state
 			// belongs to a dead object; this one starts fresh.
@@ -43,6 +83,7 @@ func (s Store) Load(ctx context.Context, fd *unstructured.Unstructured) (state.S
 		st, ok := state.FromData(cm.Data)
 		return st, ok, nil
 	case client.IgnoreNotFound(err) == nil:
+		s.Seen.drop(key(fd))
 		return state.State{}, false, nil
 	default:
 		return state.State{}, false, fmt.Errorf("load state: %w", err)
@@ -52,12 +93,29 @@ func (s Store) Load(ctx context.Context, fd *unstructured.Unstructured) (state.S
 // Save writes the state, creating the ConfigMap on first use. Unchanged data is not written.
 // Delete removes the deployment's memory. Not found is fine.
 func (s Store) Delete(ctx context.Context, fd *unstructured.Unstructured) error {
+	s.Seen.drop(key(fd))
 	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: fd.GetNamespace(), Name: Name(fd.GetName())}}
 	return client.IgnoreNotFound(s.Client.Delete(ctx, cm))
 }
 
 func (s Store) Save(ctx context.Context, fd *unstructured.Unstructured, st state.State) error {
 	data := st.Data()
+	if seen, ok := s.Seen.get(key(fd)); ok && ownedBy(seen, fd) {
+		if maps.Equal(seen.Data, data) {
+			return nil
+		}
+		next := seen.DeepCopy()
+		next.Data = data
+		err := s.Client.Patch(ctx, next, client.MergeFrom(seen), client.FieldOwner("siesta"))
+		if err == nil {
+			s.Seen.put(next)
+			return nil
+		}
+		if client.IgnoreNotFound(err) != nil {
+			return fmt.Errorf("save state: %w", err)
+		}
+		s.Seen.drop(key(fd)) // deleted since it was read: create it below
+	}
 	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: fd.GetNamespace(), Name: Name(fd.GetName())}}
 	err := s.Reader.Get(ctx, client.ObjectKeyFromObject(cm), cm)
 	if client.IgnoreNotFound(err) != nil {
@@ -70,7 +128,11 @@ func (s Store) Save(ctx context.Context, fd *unstructured.Unstructured, st state
 			APIVersion: fd.GetAPIVersion(), Kind: fd.GetKind(), Name: fd.GetName(), UID: fd.GetUID(),
 			Controller: ptr.To(true), BlockOwnerDeletion: ptr.To(true),
 		}}
-		return s.Client.Create(ctx, cm, client.FieldOwner("siesta"))
+		if err := s.Client.Create(ctx, cm, client.FieldOwner("siesta")); err != nil {
+			return err
+		}
+		s.Seen.put(cm)
+		return nil
 	}
 	if !ownedBy(cm, fd) {
 		// Replace the dead deployment's ConfigMap rather than write into an object about to vanish.
@@ -85,7 +147,11 @@ func (s Store) Save(ctx context.Context, fd *unstructured.Unstructured, st state
 	}
 	patch := client.MergeFrom(cm.DeepCopy())
 	cm.Data = data
-	return s.Client.Patch(ctx, cm, patch, client.FieldOwner("siesta"))
+	if err := s.Client.Patch(ctx, cm, patch, client.FieldOwner("siesta")); err != nil {
+		return err
+	}
+	s.Seen.put(cm)
+	return nil
 }
 
 // ownedBy: the ConfigMap's owner reference points at this very deployment (same UID).

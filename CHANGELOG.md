@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- `--max-concurrent-reconciles`, 4 by default, reconciles that many deployments at once. It was one, so a pass over a thousand deployments overran the poll interval, and during a Kafka outage each waited out `--probe-timeout` in turn. Chart value `config.maxConcurrentReconciles`.
+- `--kube-api-qps` and `--kube-api-burst`, 20 and 30, set the client's rate limit towards the Kubernetes API, so it can be raised with the workers. Chart values under `config.kubeAPI`.
+- The consumer-group lag is measured against the end offsets the tick already read, instead of asking the broker for them a second time.
+- A tick reads its ConfigMap once. The save compared against a second, uncached read before.
+
 ## 0.4.1, 2026-10-24
 
 - Fix: a job seen RESTARTING was restarted on the spot once it had been awake longer than `--failing-after`, because the time was counted from its last resume or restart. Flink's own restart strategy passes through RESTARTING for seconds, so one poll catching it cost a redeploy and a slot of the budget. RESTARTING now counts as failing once it has lasted `--failing-after`.

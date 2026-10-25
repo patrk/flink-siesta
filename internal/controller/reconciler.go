@@ -15,6 +15,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/recorder"
@@ -57,6 +58,9 @@ type Reconciler struct {
 	PollInterval     time.Duration
 	ProbeTimeout     time.Duration
 	ResumeStallAfter time.Duration // warn once if a resumed job is not RUNNING after this
+	// Concurrency is how many deployments are reconciled at once; one deployment never is twice
+	// at once. A tick mostly waits on the broker and the job, so more workers than cores is fine.
+	Concurrency int
 }
 
 func (r *Reconciler) requeue() time.Duration {
@@ -99,6 +103,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("siesta").
+		WithOptions(controller.Options{MaxConcurrentReconciles: max(1, r.Concurrency)}).
 		For(flink.New(), builder.WithPredicates(hasPolicy, relevantChange(r.Prefix))).
 		Complete(r)
 }
@@ -150,6 +155,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 func (r *Reconciler) forget(req ctrl.Request) {
 	metrics.Forget(req.Namespace, req.Name)
 	r.memo.forget(req.String())
+	r.Store.Forget(req.Namespace, req.Name)
 }
 
 // memo is what the process remembers between ticks and may lose on a restart: the job graph
@@ -307,8 +313,9 @@ func (r *Reconciler) observe(ctx context.Context, req ctrl.Request, fd *unstruct
 	offsets, err := timed("offsets", func() (probe.Offsets, error) { return r.Probe.Observe(kctx, pol.Sources) })
 	obs.Snapshot, obs.Ends = offsets.Snapshot, offsets.Ends
 	obs.Known = known(log, "offsets", err)
-	if pol.ConsumerGroup != "" && r.Lag != nil {
-		obs.Pending, err = timed("lag", func() (int64, error) { return r.Lag.Lag(kctx, pol.ConsumerGroup, pol.Sources) })
+	// Lag is measured against the end offsets just read: without them there is nothing to measure.
+	if pol.ConsumerGroup != "" && r.Lag != nil && obs.Known {
+		obs.Pending, err = timed("lag", func() (int64, error) { return r.Lag.Lag(kctx, pol.ConsumerGroup, obs.Ends) })
 		obs.LagKnown = known(log, "lag", err)
 		if errors.Is(err, probe.ErrNoCommit) {
 			obs.Uncommitted = err.Error()

@@ -71,6 +71,8 @@ Every knob has a default that fits a typical namespace. Change them through `con
 | `min-awake` (annotation) | `1h` | never suspend sooner than this after a resume or restart |
 | `--poll-interval` | `1m` | how often each deployment is visited |
 | `--probe-timeout` | `10s` | bound for the probes of one tick: the Kafka reads and each call to the job's REST API get this long each |
+| `--max-concurrent-reconciles` | `4` | deployments reconciled at once; see [Scale](development.md#scale) |
+| `--kube-api-qps`, `--kube-api-burst` | `20`, `30` | client-side rate limit towards the Kubernetes API |
 | `--restart-max`, `--restart-window`, `--restart-backoff` | `3`, `30m`, `1m` | restart budget for failing jobs, backoff doubles within the window |
 | `--failing-after` | `10m` | RESTARTING longer than this counts as failing |
 | `--resume-stall-after` | `10m` | warn once if a resume or a suspend has not completed after this |

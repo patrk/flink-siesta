@@ -3,6 +3,8 @@ package probe
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -63,11 +65,12 @@ func (k *Kafka) Observe(ctx context.Context, topics []string) (Offsets, error) {
 	return Offsets{Snapshot: out, Ends: perTopic}, nil
 }
 
-// Lag sums end offset minus the group's committed offset over every partition of the topics.
-// Flink commits the next offset to read on each checkpoint, or on the client's auto-commit
-// interval with checkpointing off, and the end offset is the next offset to write, so the
-// difference is exactly the records not yet committed as consumed.
-func (k *Kafka) Lag(ctx context.Context, group string, topics []string) (int64, error) {
+// Lag sums end offset minus the group's committed offset over every partition in ends, the
+// end offsets this tick's Observe read, so a tick asks the broker for them once. Flink commits
+// the next offset to read on each checkpoint, or on the client's auto-commit interval with
+// checkpointing off, and the end offset is the next offset to write, so the difference is
+// exactly the records not yet committed as consumed.
+func (k *Kafka) Lag(ctx context.Context, group string, ends map[string][]int64) (int64, error) {
 	committed, err := k.adm.FetchOffsets(ctx, group)
 	if err == nil {
 		err = committed.Error()
@@ -75,29 +78,27 @@ func (k *Kafka) Lag(ctx context.Context, group string, topics []string) (int64, 
 	if err != nil {
 		return 0, fmt.Errorf("committed offsets for group %s: %w", group, err)
 	}
-	ends, err := k.adm.ListEndOffsets(ctx, topics...)
-	if err == nil {
-		err = ends.Error()
-	}
-	if err != nil {
-		return 0, fmt.Errorf("end offsets for %s: %w", strings.Join(topics, ","), err)
+	topics := slices.Sorted(maps.Keys(ends))
+	if len(topics) == 0 {
+		return 0, fmt.Errorf("no end offsets to measure group %s against", group)
 	}
 	var pending int64
-	var uncommitted error
-	ends.Each(func(o kadm.ListedOffset) {
-		c, ok := committed.Lookup(o.Topic, o.Partition)
-		switch {
-		case ok && c.Err != nil:
-			uncommitted = fmt.Errorf("committed offset for group %s, %s partition %d: %w", group, o.Topic, o.Partition, c.Err)
-			return
-		case !ok || c.At < 0:
-			// A partition this group never committed, or whose commit expired: we cannot say it is caught up.
-			uncommitted = fmt.Errorf("group %s has %w for %s partition %d", group, ErrNoCommit, o.Topic, o.Partition)
-			return
+	for _, topic := range topics {
+		for p, end := range ends[topic] {
+			c, ok := committed.Lookup(topic, int32(p))
+			switch {
+			case end < 0:
+				return 0, fmt.Errorf("no end offset for %s partition %d", topic, p)
+			case ok && c.Err != nil:
+				return 0, fmt.Errorf("committed offset for group %s, %s partition %d: %w", group, topic, p, c.Err)
+			case !ok || c.At < 0:
+				// A partition this group never committed, or whose commit expired: we cannot say it is caught up.
+				return 0, fmt.Errorf("group %s has %w for %s partition %d", group, ErrNoCommit, topic, p)
+			}
+			if d := end - c.At; d > 0 {
+				pending += d
+			}
 		}
-		if d := o.Offset - c.At; d > 0 {
-			pending += d
-		}
-	})
-	return pending, uncommitted
+	}
+	return pending, nil
 }
