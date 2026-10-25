@@ -13,7 +13,7 @@
 
 The image and the chart are published to the GitHub Container Registry on every tag.
 
-    helm install siesta oci://ghcr.io/patrk/charts/flink-siesta --version 0.4.1 \
+    helm install siesta oci://ghcr.io/patrk/charts/flink-siesta --version 0.5.0 \
       --set kafka.bootstrapServers=... --set kafka.securityProtocol=SASL_SSL \
       --set kafka.sasl.existingSecret=kafka-auth
 
@@ -124,6 +124,16 @@ Release images and charts carry SLSA provenance and an SBOM, and they are signed
 ## Upgrading
 
 From 0.3.x or 0.4.x, `helm upgrade` is enough. 0.4.1 adds a second admission policy, for ConfigMaps, and one key to the memory in them, `restarting-since`, which 0.4.0 ignores.
+
+0.5.0 keeps the memory as it was. What changes on upgrade:
+
+- The controller reconciles 4 deployments at once instead of one, set by `config.maxConcurrentReconciles`.
+- Its client limits itself to 50 requests a second to the Kubernetes API, burst 100. 0.4 set no limit of its own and left it to the API server's priority and fairness. `config.kubeAPI.qps: -1` goes back to that. Each quiet tick now costs one request instead of two, so the load is lower than before at the same scale.
+- With `replicaCount` above 1 the chart adds a PodDisruptionBudget. `networkPolicy.enabled` and `metrics.secure` are off by default. With `metrics.secure` on, the metrics are served over HTTPS and need a token allowed `GET /metrics`, so a ServiceMonitor or scrape job must send one: the chart's ServiceMonitor does.
+- `last-state` jobs no longer raise `SuspendedWithoutSavepoint` on every sleep. An alert built on that event goes quiet for them.
+- Under `idle: job`, a quiet job on transactional topics can now sleep. The commit markers kept it awake before.
+
+Rolling back to 0.4.1 is a `helm rollback`, with one catch: 0.4 does not know the per-job `dry-run` annotation and acts on those jobs. Remove the annotation, or set `mode: off` on them, first. Durations such as `1d12h` read as `InvalidPolicy` in 0.4, which leaves the job awake.
 
 Rolling back within 0.4 is a `helm rollback`. Rolling back to 0.3 with jobs asleep under `resume-from: group-offsets` is not safe: 0.3 knows neither the mode nor `max-sleep`, so nothing wakes those jobs before the broker expires their group's offsets, and a resume after that starts from the reset strategy. Set `mode: off` on them first, which resumes them, and roll back once they run.
 

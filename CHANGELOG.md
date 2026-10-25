@@ -1,30 +1,40 @@
 # Changelog
 
-## Unreleased
+## 0.5.0, 2026-10-25
 
-- Fix: the FlinkDeployment was read from the API server on every tick, not from the watch's cache, because controller-runtime serves unstructured objects from its cache only when told to. Every tick cost two requests instead of one, which capped a pass at 20 deployments a second under the client's rate limit.
+Runs a thousand jobs and more: measured at 2,000 deployments on one controller. See [Scale](docs/development.md#scale).
+
+### Scale
+
+- Fix: the FlinkDeployment was read from the API server on every tick, not from the watch's cache, because controller-runtime serves unstructured objects from its cache only when told to. Every tick cost two requests instead of one.
 - Fix: controller-runtime's priority queue ranks the objects of the initial list below requeues. Once the controller was saturated, the deployments requeued by their own ticks took every turn, and at 2,000 deployments 795 were never visited again after the first pass, so they never slept. The queue is first in, first out now.
-- `--kube-api-qps` and `--kube-api-burst` default to 50 and 100. A quiet tick costs one request, so 50 carries about 2,500 deployments.
+- `--max-concurrent-reconciles`, 4 by default, reconciles that many deployments at once. It was one, so a pass over a thousand deployments overran the poll interval, and during a Kafka outage each waited out `--probe-timeout` in turn. Chart value `config.maxConcurrentReconciles`.
+- `--kube-api-qps` and `--kube-api-burst`, 50 and 100 by default, set the client's rate limit towards the Kubernetes API. 0.4 set none and relied on the API server's priority and fairness; `-1` restores that. A quiet tick costs one request, so 50 carries about 2,500 deployments. Chart values under `config.kubeAPI`.
+- The consumer-group lag is measured against the end offsets the tick already read, instead of asking the broker for them a second time.
+- A tick reads its ConfigMap once. The save compared against a second, uncached read before.
 - `make e2e-load-test` runs N deployments with simulated status against one broker on KinD. At 2,000: a first pass in 78 s, every deployment visited every 60 s, 33.5 API requests a second, all asleep 397 s after install, 200 resumed within 69 s of their records, 162 MiB. It found both fixes above.
-- OAUTHBEARER for Kafka, two ways: a token file read on every authentication, such as a projected ServiceAccount token for a cluster that trusts this cluster's OIDC issuer, which the chart can mount; or the client credentials grant against an identity provider, the token reused until a minute before it expires. SASL extensions for Confluent Cloud's `logicalCluster` and `identityPoolId`. Tested against an Apache Kafka broker.
-- The Kafka CA, client certificate and key are read again for every new connection, so a certificate rotated by cert-manager needs no restart. They were read once at startup.
-- `--metrics-secure`, chart value `metrics.secure`: metrics over HTTPS, only for callers whose token the Kubernetes API authenticates and authorizes for `GET /metrics`. Off by default. Done with a TokenReview and a SubjectAccessReview instead of controller-runtime's filters, which would have grown the binary from 34 to 55 MB.
-- Fix: every sleep of a `last-state` job raised `SuspendedWithoutSavepoint`. The operator takes no savepoint for a `last-state` suspend by design. Found by the new `last-state` e2e scenario, which also checks the resume restores from the last checkpoint.
-- The chart adds a PodDisruptionBudget with more than one replica, and an optional NetworkPolicy.
-- Base images pinned by digest, Dependabot for them and the Go modules, `govulncheck` on every pull request and every night, `setup-envtest` pinned, `golang.org/x/net` 0.60.0, and a `SECURITY.md`.
-- `docs/roadmap.md` lists what is known and not built yet.
+
+### Fixes and job policy
+
 - Fix: with transactional producers, `idle: job` never let a job sleep. Each transaction ends in a commit marker, which takes an offset no reader is given, so the gate always counted one record pending. For a quiet job short of the end offset, the controller now asks the broker whether anything a consumer is given lies in between: markers, aborted transactions and compacted-away offsets do not count, an open transaction does. Tested against a real broker and, in the `job-graph` e2e scenario, a transactional producer.
 - Fix: a metrics read for a source with more than about 50 partitions did not fit the 4096-byte request line Flink's REST server accepts, which answers 404, so `idle: job` held such a job with `job unknown` for good. The read is now split across requests.
 - Fix: the unrecoverable patterns were matched on every tick, also against an old `status.error` on a job that had recovered and was running, which marked it unrecoverable and kept it awake. They are now matched only with `restart` on and on a job that is not STABLE and RUNNING.
 - Fix: a tick that read the deployment from a stale cache right after siesta's own suspend could write `state: active` over the suspend, after which the job counted as suspended outside siesta and input no longer woke it. A write is no longer retried when `spec.job.state` changed since the read.
 - Fix: with `sources: auto`, a job whose ConfigMap was lost while it slept had nothing to watch and slept for good. It is now resumed so its topics can be learned again, or, resuming from group offsets, held with a reason, since its group's offsets cannot be checked without them. `sources-unknown` in `siesta_held_awake`.
 - Fix: `sources: auto` before anything was learned raised `SourceUnreachable`, though nothing had been asked.
+- Fix: every sleep of a `last-state` job raised `SuspendedWithoutSavepoint`. The operator takes no savepoint for a `last-state` suspend by design. Found by the new `last-state` e2e scenario, which also checks the resume restores from the last checkpoint.
 - The `dry-run` annotation records what the controller would do to one job without doing it, as `config.dryRun` does for all.
 - Durations take days followed by a Go duration, such as `1d12h`.
-- `--max-concurrent-reconciles`, 4 by default, reconciles that many deployments at once. It was one, so a pass over a thousand deployments overran the poll interval, and during a Kafka outage each waited out `--probe-timeout` in turn. Chart value `config.maxConcurrentReconciles`.
-- `--kube-api-qps` and `--kube-api-burst`, 20 and 30, set the client's rate limit towards the Kubernetes API, so it can be raised with the workers. Chart values under `config.kubeAPI`.
-- The consumer-group lag is measured against the end offsets the tick already read, instead of asking the broker for them a second time.
-- A tick reads its ConfigMap once. The save compared against a second, uncached read before.
+
+### Security and operations
+
+- OAUTHBEARER for Kafka, two ways: a token file read on every authentication, such as a projected ServiceAccount token for a cluster that trusts this cluster's OIDC issuer, which the chart can mount; or the client credentials grant against an identity provider, the token reused until a minute before it expires. SASL extensions for Confluent Cloud's `logicalCluster` and `identityPoolId`. Tested against an Apache Kafka broker.
+- The Kafka CA, client certificate and key are read again for every new connection, so a certificate rotated by cert-manager needs no restart. They were read once at startup.
+- `--metrics-secure`, chart value `metrics.secure`: metrics over HTTPS, only for callers whose token the Kubernetes API authenticates and authorizes for `GET /metrics`. Off by default. Done with a TokenReview and a SubjectAccessReview instead of controller-runtime's filters, which would have grown the binary from 34 to 55 MB.
+- The chart adds a PodDisruptionBudget with more than one replica, and an optional NetworkPolicy.
+- Base images pinned by digest, Dependabot for them and the Go modules, `govulncheck` on every pull request and every night, `setup-envtest` pinned, `golang.org/x/net` 0.60.0, and a `SECURITY.md`.
+- Dependencies: controller-runtime 0.25.2, client-go 0.37.1, franz-go 1.22.2, client_golang 1.25.0. `govulncheck` 1.9.0, since 1.1.4 panics on code the newer modules contain.
+- `docs/roadmap.md` lists what is known and not built yet.
 
 ## 0.4.1, 2026-10-24
 

@@ -4,8 +4,8 @@ description: Suspend idle Flink jobs and resume them on the first new record
 type: application
 # Kept at the latest release, so a chart installed from a checkout runs that image. A release
 # packages it with the tag's version either way.
-version: 0.4.1
-appVersion: "v0.4.1"
+version: 0.5.0
+appVersion: "v0.5.0"
 icon: https://raw.githubusercontent.com/patrk/flink-siesta/main/docs/logo.png
 home: https://github.com/patrk/flink-siesta
 sources: [https://github.com/patrk/flink-siesta]
