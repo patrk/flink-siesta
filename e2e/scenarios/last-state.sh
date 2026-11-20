@@ -6,7 +6,7 @@ scenario_start last-state
 m=$(render "$here/flinkdeployment.yaml")
 # A checkpoint must complete between the last record and the suspend, or there is nothing to
 # restore: with idle-after at 2m here, a 20s interval; in production idle-after is days.
-perl -pi -e 's#upgradeMode: savepoint#upgradeMode: last-state#; s#^(\s+)(execution.checkpointing.dir: .*)$#$1$2\n$1execution.checkpointing.interval: 20 s#' "$m"
+perl -pi -e 's#upgradeMode: savepoint#upgradeMode: last-state#; s#^(\s+)((?:execution.checkpointing|state.checkpoints).dir: .*)$#$1$2\n$1execution.checkpointing.interval: 20 s#' "$m"
 grep -q 'upgradeMode: last-state' "$m" && grep -q 'interval: 20 s' "$m" || { echo "rendering the last-state manifest failed"; exit 1; }
 k -n $ns apply -f "$m"
 wait_for '{.status.jobStatus.state}' RUNNING 300

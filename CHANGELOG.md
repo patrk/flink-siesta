@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.0, 2026-10-25
+## 0.5.0, 2026-11-20
 
 Runs a thousand jobs and more: measured at 2,000 deployments on one controller. See [Scale](docs/development.md#scale).
 
